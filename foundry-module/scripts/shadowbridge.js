@@ -3,22 +3,19 @@ const DEFAULT_SERVER_URL = "http://127.0.0.1:31777";
 const DEFAULT_POLL_MS = 1000;
 
 let runtime = null;
+let startupError = null;
+
+window.ShadowbridgeMCP = {
+  status,
+  restart,
+};
 
 Hooks.once("init", () => {
   registerSettings();
 });
 
 Hooks.once("ready", () => {
-  if (!game.user?.isGM) return;
-
-  const token = game.settings.get(MODULE_ID, "token");
-  if (!token) {
-    ui.notifications?.warn("Shadowbridge MCP is enabled, but no token is configured.");
-    return;
-  }
-
-  runtime = new ShadowbridgeRuntime();
-  runtime.start();
+  restart();
 });
 
 function registerSettings() {
@@ -64,14 +61,20 @@ class ShadowbridgeRuntime {
     this.serverUrl = String(game.settings.get(MODULE_ID, "serverUrl") || DEFAULT_SERVER_URL).replace(/\/+$/, "");
     this.token = String(game.settings.get(MODULE_ID, "token") || "");
     this.pollMs = Number(game.settings.get(MODULE_ID, "pollMs") || DEFAULT_POLL_MS);
-    this.clientId = `${game.world.id}-${game.user.id}-${randomID(8)}`;
+    this.clientId = `${game.world.id}-${game.user.id}-${makeRandomId(8)}`;
     this.running = false;
+    this.lastConnect = null;
+    this.lastError = null;
   }
 
   start() {
     this.running = true;
     this.register()
-      .then(() => console.info(`[${MODULE_ID}] Connected to ${this.serverUrl}`))
+      .then(() => {
+        this.lastConnect = new Date().toISOString();
+        this.lastError = null;
+        console.info(`[${MODULE_ID}] Connected to ${this.serverUrl}`);
+      })
       .catch((error) => this.logError("register", error));
     this.poll();
   }
@@ -147,8 +150,73 @@ class ShadowbridgeRuntime {
   }
 
   logError(context, error) {
+    this.lastError = {
+      context,
+      message: error.message || String(error),
+      at: new Date().toISOString(),
+    };
     console.warn(`[${MODULE_ID}] ${context}: ${error.message || error}`);
   }
+}
+
+function restart() {
+  startupError = null;
+  try {
+    if (!game.user?.isGM) {
+      console.info(`[${MODULE_ID}] Not starting because this user is not a GM.`);
+      return status();
+    }
+
+    const token = game.settings.get(MODULE_ID, "token");
+    if (!token) {
+      ui.notifications?.warn("Shadowbridge MCP is enabled, but no token is configured.");
+      return status();
+    }
+
+    runtime?.stop();
+    runtime = new ShadowbridgeRuntime();
+    runtime.start();
+    return status();
+  } catch (error) {
+    startupError = {
+      message: error.message || String(error),
+      stack: error.stack || "",
+      at: new Date().toISOString(),
+    };
+    console.error(`[${MODULE_ID}] startup failed`, error);
+    return status();
+  }
+}
+
+function status() {
+  const token = game.settings.get(MODULE_ID, "token") || "";
+  const module = game.modules.get(MODULE_ID);
+  return {
+    user: game.user?.name,
+    isGM: game.user?.isGM,
+    moduleActive: module?.active,
+    moduleVersion: module?.version,
+    serverUrl: game.settings.get(MODULE_ID, "serverUrl"),
+    tokenLength: token.length,
+    tokenUniqueChars: token ? new Set(token).size : 0,
+    runtimeStarted: Boolean(runtime?.running),
+    clientId: runtime?.clientId || null,
+    lastConnect: runtime?.lastConnect || null,
+    lastError: runtime?.lastError || null,
+    startupError,
+  };
+}
+
+function makeRandomId(length) {
+  if (globalThis.foundry?.utils?.randomID) return globalThis.foundry.utils.randomID(length);
+  if (globalThis.randomID) return globalThis.randomID(length);
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const values = new Uint8Array(length);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(values);
+    return Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+  }
+  return Array.from({ length }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
 }
 
 async function dispatchCommand(method, args) {

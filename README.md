@@ -43,7 +43,7 @@ This avoids needing filesystem access to the remote Foundry server after the mod
    - token: contents of `shadowbridge-token.txt`
 4. Keep the world open in a GM Chrome tab.
 
-The release zip is also checked into `release/shadowbridge-mcp-module-0.1.1.zip` for manual installs.
+The release zip is also checked into `release/shadowbridge-mcp-module-0.1.2.zip` for manual installs.
 
 ## MCP Server
 

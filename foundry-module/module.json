@@ -2,7 +2,7 @@
   "id": "shadowbridge-mcp",
   "title": "Shadowbridge MCP",
   "description": "Personal MCP bridge for actor, item, effect, flag, and token maintenance in Foundry VTT.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "compatibility": {
     "minimum": "13",
     "verified": "14",
@@ -19,5 +19,5 @@
   "protected": false,
   "socket": false,
   "manifest": "https://raw.githubusercontent.com/imabeast5212011-sketch/shadowbridge-mcp/main/foundry-module/module.json",
-  "download": "https://raw.githubusercontent.com/imabeast5212011-sketch/shadowbridge-mcp/main/release/shadowbridge-mcp-module-0.1.1.zip"
+  "download": "https://raw.githubusercontent.com/imabeast5212011-sketch/shadowbridge-mcp/main/release/shadowbridge-mcp-module-0.1.2.zip"
 }
