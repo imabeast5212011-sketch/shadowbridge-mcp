@@ -1,0 +1,15 @@
+{
+  "name": "shadowbridge-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal Foundry VTT MCP bridge for actor, item, effect, flag, and token operations.",
+  "main": "shadowbridge-mcp.js",
+  "scripts": {
+    "start": "node shadowbridge-mcp.js",
+    "check": "node --check shadowbridge-mcp.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

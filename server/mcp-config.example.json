@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "shadowbridge": {
+      "command": "node",
+      "args": [
+        "K:\\FoundryMigration\\CurseShadowfiend\\shadowbridge-mcp\\server\\shadowbridge-mcp.js"
+      ]
+    }
+  }
+}
