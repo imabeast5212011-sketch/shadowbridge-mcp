@@ -10,7 +10,6 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
   if (!game.user?.isGM) return;
-  if (!game.settings.get(MODULE_ID, "enabled")) return;
 
   const token = game.settings.get(MODULE_ID, "token");
   if (!token) {
@@ -25,11 +24,11 @@ Hooks.once("ready", () => {
 function registerSettings() {
   game.settings.register(MODULE_ID, "enabled", {
     name: "Enable Shadowbridge MCP",
-    hint: "Only GM clients connect. Disable this in worlds that should not expose MCP maintenance tools.",
+    hint: "Legacy setting. Shadowbridge now connects whenever the module is active in the world and a token is configured.",
     scope: "world",
-    config: true,
+    config: false,
     type: Boolean,
-    default: false,
+    default: true,
   });
 
   game.settings.register(MODULE_ID, "serverUrl", {
@@ -71,7 +70,9 @@ class ShadowbridgeRuntime {
 
   start() {
     this.running = true;
-    this.register().catch((error) => this.logError("register", error));
+    this.register()
+      .then(() => console.info(`[${MODULE_ID}] Connected to ${this.serverUrl}`))
+      .catch((error) => this.logError("register", error));
     this.poll();
   }
 

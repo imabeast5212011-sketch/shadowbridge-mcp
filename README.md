@@ -8,7 +8,7 @@ This is original, narrow-scope code. It is not a fork or repackaging of another 
 
 - `foundry-module/` - Foundry module installed into your world.
 - `server/` - local MCP server launched by Codex/Claude.
-- `release/` - packaged Foundry module zip.
+- `release/` - packaged Foundry module zips.
 
 ## How It Works
 
@@ -39,12 +39,11 @@ This avoids needing filesystem access to the remote Foundry server after the mod
 
 2. Enable `Shadowbridge MCP` in your world.
 3. In module settings:
-   - enable Shadowbridge
    - server URL: `http://127.0.0.1:31777`
    - token: contents of `shadowbridge-token.txt`
 4. Keep the world open in a GM Chrome tab.
 
-The release zip is also checked into `release/shadowbridge-mcp-module-0.1.0.zip` for manual installs.
+The release zip is also checked into `release/shadowbridge-mcp-module-0.1.1.zip` for manual installs.
 
 ## MCP Server
 

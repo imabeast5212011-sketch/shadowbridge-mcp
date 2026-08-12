@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.0" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.1" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -20,6 +20,12 @@ const clients = new Map();
 const queues = new Map();
 const waiters = new Map();
 const pendingResults = new Map();
+const diagnostics = {
+  startedAt: new Date().toISOString(),
+  totalRequests: 0,
+  authFailures: 0,
+  recentRequests: [],
+};
 
 const tools = [
   {
@@ -188,22 +194,28 @@ function startHttpBridge() {
   const server = http.createServer(async (req, res) => {
     try {
       setCors(req, res);
-      if (req.method === "OPTIONS") return endJson(res, 204, null);
       const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
+      recordRequest(req, url);
+      if (req.method === "OPTIONS") return endJson(res, 204, null);
 
       if (url.pathname === "/health") {
         return endJson(res, 200, {
           ok: true,
           server: SERVER_INFO,
           clients: getActiveClients().length,
+          diagnostics,
         });
       }
 
-      if (!isAuthorized(req, url)) return endJson(res, 401, { ok: false, error: "Unauthorized" });
+      if (!isAuthorized(req, url)) {
+        diagnostics.authFailures += 1;
+        return endJson(res, 401, { ok: false, error: "Unauthorized" });
+      }
 
       if (req.method === "GET" && url.pathname === "/bridge/poll") return handlePoll(req, res, url);
       if (req.method === "POST" && url.pathname === "/bridge/result") return handleResult(req, res);
       if (req.method === "POST" && url.pathname === "/bridge/register") return handleRegister(req, res);
+      if (req.method === "POST" && url.pathname === "/debug/call") return handleDebugCall(req, res);
 
       return endJson(res, 404, { ok: false, error: "Not found" });
     } catch (error) {
@@ -226,6 +238,19 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
+function recordRequest(req, url) {
+  diagnostics.totalRequests += 1;
+  diagnostics.recentRequests.unshift({
+    at: new Date().toISOString(),
+    method: req.method,
+    path: url.pathname,
+    origin: req.headers.origin || "",
+    privateNetwork: req.headers["access-control-request-private-network"] || "",
+    requestHeaders: req.headers["access-control-request-headers"] || "",
+  });
+  diagnostics.recentRequests = diagnostics.recentRequests.slice(0, 20);
+}
+
 function isAuthorized(req, url) {
   const header = req.headers["x-shadowbridge-token"];
   const queryToken = url.searchParams.get("token");
@@ -236,6 +261,13 @@ async function handleRegister(req, res) {
   const body = await readJson(req);
   const client = registerClient(body);
   return endJson(res, 200, { ok: true, client });
+}
+
+async function handleDebugCall(req, res) {
+  const body = await readJson(req);
+  if (!body?.method) return endJson(res, 400, { ok: false, error: "Missing method" });
+  const result = await dispatchToFoundry(String(body.method), body.args || {});
+  return endJson(res, 200, { ok: true, result });
 }
 
 function handlePoll(_req, res, url) {
