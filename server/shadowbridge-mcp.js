@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.2" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.4" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -213,9 +213,9 @@ function startHttpBridge() {
       }
 
       if (req.method === "GET" && url.pathname === "/bridge/poll") return handlePoll(req, res, url);
-      if (req.method === "POST" && url.pathname === "/bridge/result") return handleResult(req, res);
-      if (req.method === "POST" && url.pathname === "/bridge/register") return handleRegister(req, res);
-      if (req.method === "POST" && url.pathname === "/debug/call") return handleDebugCall(req, res);
+      if (req.method === "POST" && url.pathname === "/bridge/result") return await handleResult(req, res);
+      if (req.method === "POST" && url.pathname === "/bridge/register") return await handleRegister(req, res);
+      if (req.method === "POST" && url.pathname === "/debug/call") return await handleDebugCall(req, res);
 
       return endJson(res, 404, { ok: false, error: "Not found" });
     } catch (error) {
@@ -294,7 +294,7 @@ async function handleResult(req, res) {
   pendingResults.delete(body.commandId);
 
   if (body.ok) pending.resolve(body.result);
-  else pending.reject(new Error(body.error || "Foundry command failed"));
+  else pending.resolve({ __shadowbridgeError: body.error || "Foundry command failed" });
 
   return endJson(res, 200, { ok: true });
 }
@@ -369,6 +369,9 @@ function dispatchToFoundry(method, args = {}) {
       reject(new Error(`Timed out waiting for Foundry response to ${method}`));
     }, REQUEST_TIMEOUT_MS);
     pendingResults.set(commandId, { resolve, reject, timeout });
+  }).then((result) => {
+    if (result?.__shadowbridgeError) throw new Error(result.__shadowbridgeError);
+    return result;
   });
 }
 

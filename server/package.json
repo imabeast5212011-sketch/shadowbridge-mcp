@@ -1,6 +1,6 @@
 {
   "name": "shadowbridge-mcp",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "description": "Personal Foundry VTT MCP bridge for actor, item, effect, flag, and token operations.",
