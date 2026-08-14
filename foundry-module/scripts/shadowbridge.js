@@ -312,7 +312,7 @@ async function updateActors(args = {}) {
   for (const update of updates) {
     const actor = findActor(update.id || update.name || update.actorIdentifier);
     const patch = {};
-    for (const key of ["name", "img", "system", "prototypeToken", "flags"]) {
+    for (const key of ["name", "img", "system", "prototypeToken", "flags", "ownership"]) {
       if (update[key] !== undefined) patch[key] = update[key];
     }
     if (update.folder !== undefined) {
@@ -341,6 +341,7 @@ function prepareActorData(actor, folder) {
     ...(actor.system ? { system: actor.system } : {}),
     ...(actor.prototypeToken ? { prototypeToken: actor.prototypeToken } : {}),
     ...(actor.flags ? { flags: actor.flags } : {}),
+    ...(actor.ownership ? { ownership: actor.ownership } : {}),
     ...(Array.isArray(actor.items) ? { items: actor.items.map(prepareItemData) } : {}),
     ...(Array.isArray(actor.effects) ? { effects: actor.effects.map(prepareEffectData) } : {}),
   };
@@ -724,6 +725,7 @@ function serializeActor(actor, options = {}) {
   return {
     ...compactActor(actor),
     img: actor.img,
+    ownership: actor.ownership,
     system: options.includeSystem ? actor.system : undefined,
     items: options.includeItems === false ? undefined : actor.items?.map((item) => serializeItem(item, { includeEffects: true })),
     effects: options.includeEffects === false ? undefined : actor.effects?.map(serializeEffect),
