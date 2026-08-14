@@ -706,7 +706,7 @@ async function applyEffectCommands(document, commands) {
 
 function prepareEffectData(effect) {
   const data = {};
-  for (const key of ["name", "label", "icon", "img", "type", "description", "disabled", "transfer", "origin", "duration", "changes", "flags", "statuses"]) {
+  for (const key of ["name", "label", "icon", "img", "type", "description", "disabled", "transfer", "origin", "duration", "changes", "flags", "statuses", "system"]) {
     if (effect?.[key] !== undefined) data[key] = effect[key];
   }
   if (effect?.id !== undefined) data._id = effect.id;
@@ -752,11 +752,13 @@ function serializeEffect(effect) {
     id: effect.id,
     name: effect.name || effect.label || "Unknown Effect",
     icon: effect.icon,
+    type: effect.type,
     disabled: effect.disabled,
     transfer: effect.transfer,
     origin: effect.origin,
     duration: effect.duration,
     changes: effect.changes,
+    system: effect.system,
     flags: effect.flags,
     statuses: Array.from(effect.statuses || []),
   };
