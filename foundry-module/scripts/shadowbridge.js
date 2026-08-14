@@ -226,6 +226,8 @@ async function dispatchCommand(method, args) {
       return getWorldInfo();
     case "get_actor":
       return getActor(args);
+    case "manage_actors":
+      return manageActors(args);
     case "search_actor_items":
       return searchActorItems(args);
     case "manage_actor_items":
@@ -247,6 +249,121 @@ async function dispatchCommand(method, args) {
 
 function assertGM() {
   if (!game.user?.isGM) throw new Error("Shadowbridge commands require an active GM client.");
+}
+
+async function manageActors(args = {}) {
+  switch (args.action) {
+    case "list":
+      return listActors(args);
+    case "create":
+      return createActors(args);
+    case "update":
+      return updateActors(args);
+    default:
+      throw new Error(`Unsupported manage_actors action: ${args.action}`);
+  }
+}
+
+function listActors(args = {}) {
+  const query = String(args.query || "").toLowerCase();
+  const type = args.type ? String(args.type) : null;
+  const folderName = args.folder ? String(args.folder).toLowerCase() : null;
+  const limit = Number.isFinite(args.limit) ? Number(args.limit) : 50;
+
+  const matches = game.actors
+    .filter((actor) => {
+      if (type && actor.type !== type) return false;
+      if (folderName && actor.folder?.name?.toLowerCase() !== folderName) return false;
+      if (!query) return true;
+      return actor.name?.toLowerCase().includes(query);
+    })
+    .slice(0, limit)
+    .map((actor) => serializeActor(actor, {
+      includeSystem: args.includeSystem === true,
+      includeItems: args.includeItems === true,
+      includeEffects: args.includeEffects === true,
+    }));
+
+  return { actors: matches, totalMatches: matches.length };
+}
+
+async function createActors(args = {}) {
+  const actors = args.actors || [];
+  if (!Array.isArray(actors) || actors.length === 0) throw new Error("actors array is required");
+
+  const folder = await resolveActorFolder(args.folder);
+  const docs = actors.map((actor) => prepareActorData(actor, folder));
+  const created = await Actor.createDocuments(docs);
+
+  return {
+    created: created.map((actor) => serializeActor(actor, {
+      includeSystem: true,
+      includeItems: true,
+      includeEffects: true,
+    })),
+  };
+}
+
+async function updateActors(args = {}) {
+  const updates = args.updates || [];
+  if (!Array.isArray(updates) || updates.length === 0) throw new Error("updates array is required");
+
+  const updated = [];
+  for (const update of updates) {
+    const actor = findActor(update.id || update.name || update.actorIdentifier);
+    const patch = {};
+    for (const key of ["name", "img", "system", "prototypeToken", "flags"]) {
+      if (update[key] !== undefined) patch[key] = update[key];
+    }
+    if (update.folder !== undefined) {
+      const folder = await resolveActorFolder(update.folder);
+      patch.folder = folder?.id || null;
+    }
+    if (Object.keys(patch).length > 0) await actor.update(patch);
+    updated.push(serializeActor(actor, {
+      includeSystem: true,
+      includeItems: args.includeItems === true,
+      includeEffects: true,
+    }));
+  }
+
+  return { updated };
+}
+
+function prepareActorData(actor, folder) {
+  if (!actor.name) throw new Error("Each actor requires name");
+
+  return {
+    name: actor.name,
+    type: actor.type || "npc",
+    ...(actor.img ? { img: actor.img } : {}),
+    ...(folder ? { folder: folder.id } : {}),
+    ...(actor.system ? { system: actor.system } : {}),
+    ...(actor.prototypeToken ? { prototypeToken: actor.prototypeToken } : {}),
+    ...(actor.flags ? { flags: actor.flags } : {}),
+    ...(Array.isArray(actor.items) ? { items: actor.items.map(prepareItemData) } : {}),
+    ...(Array.isArray(actor.effects) ? { effects: actor.effects.map(prepareEffectData) } : {}),
+  };
+}
+
+function prepareItemData(item) {
+  if (!item.name || !item.type) throw new Error("Each embedded item requires name and type");
+  return {
+    name: item.name,
+    type: item.type,
+    ...(item.img ? { img: item.img } : {}),
+    ...(item.system ? { system: item.system } : {}),
+    ...(item.flags ? { flags: item.flags } : {}),
+    ...(Array.isArray(item.effects) ? { effects: item.effects.map(prepareEffectData) } : {}),
+  };
+}
+
+async function resolveActorFolder(folderName) {
+  if (!folderName) return null;
+  const name = String(folderName);
+  const existing = game.folders?.find((folder) => folder.type === "Actor" && folder.name === name);
+  if (existing) return existing;
+  return Folder.create({ name, type: "Actor", sorting: "a" });
 }
 
 function getWorldInfo() {
