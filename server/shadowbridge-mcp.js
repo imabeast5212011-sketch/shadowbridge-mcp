@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.5" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.6" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -52,6 +52,34 @@ const tools = [
         includeEffects: boolProp("Include actor active effects.", true),
       },
       required: ["actorIdentifier"],
+    },
+  },
+  {
+    name: "manage_journals",
+    description: "List, create, update, or delete Foundry JournalEntry documents and text/image pages.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp(["list", "create", "update", "delete"]),
+        query: stringProp("Case-insensitive journal name search. With searchPages, also searches page text."),
+        folder: stringProp("Journal folder name. Created for create/update if absent."),
+        searchPages: boolProp("For list: search journal page text too.", false),
+        includePages: boolProp("For list: include full page data.", false),
+        limit: numberProp("Maximum journals returned.", 50),
+        journals: {
+          type: "array",
+          description: "Journals to create. Supports name, img, flags, ownership, and pages.",
+          items: { type: "object", additionalProperties: true },
+        },
+        updates: {
+          type: "array",
+          description: "Journal updates. Each needs id, name, or journalIdentifier. Supports folder, flags, ownership, replacePages, pages, deletePageIds, and deletePageNames.",
+          items: { type: "object", additionalProperties: true },
+        },
+        ids: { type: "array", items: { type: "string" } },
+      },
+      required: ["action"],
     },
   },
   {

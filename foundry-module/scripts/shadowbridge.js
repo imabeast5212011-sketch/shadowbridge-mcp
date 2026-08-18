@@ -228,6 +228,8 @@ async function dispatchCommand(method, args) {
       return getActor(args);
     case "manage_actors":
       return manageActors(args);
+    case "manage_journals":
+      return manageJournals(args);
     case "search_actor_items":
       return searchActorItems(args);
     case "manage_actor_items":
@@ -262,6 +264,115 @@ async function manageActors(args = {}) {
     default:
       throw new Error(`Unsupported manage_actors action: ${args.action}`);
   }
+}
+
+async function manageJournals(args = {}) {
+  switch (args.action) {
+    case "list":
+      return listJournals(args);
+    case "create":
+      return createJournals(args);
+    case "update":
+      return updateJournals(args);
+    case "delete":
+      return deleteJournals(args);
+    default:
+      throw new Error(`Unsupported manage_journals action: ${args.action}`);
+  }
+}
+
+function listJournals(args = {}) {
+  const query = String(args.query || "").toLowerCase();
+  const folderName = args.folder ? String(args.folder).toLowerCase() : null;
+  const limit = Number.isFinite(args.limit) ? Number(args.limit) : 50;
+
+  const matches = game.journal
+    .filter((journal) => {
+      if (folderName && journal.folder?.name?.toLowerCase() !== folderName) return false;
+      if (!query) return true;
+      const pageText = args.searchPages
+        ? Array.from(journal.pages || []).map((page) => journalPageText(page)).join("\n").toLowerCase()
+        : "";
+      return journal.name?.toLowerCase().includes(query) || pageText.includes(query);
+    })
+    .slice(0, limit)
+    .map((journal) => serializeJournal(journal, { includePages: args.includePages === true }));
+
+  return { journals: matches, totalMatches: matches.length };
+}
+
+async function createJournals(args = {}) {
+  const journals = args.journals || [];
+  if (!Array.isArray(journals) || journals.length === 0) throw new Error("journals array is required");
+
+  const folder = await resolveJournalFolder(args.folder);
+  const docs = journals.map((journal) => prepareJournalData(journal, folder));
+  const created = await JournalEntry.createDocuments(docs);
+
+  return {
+    created: created.map((journal) => serializeJournal(journal, { includePages: true })),
+  };
+}
+
+async function updateJournals(args = {}) {
+  const updates = args.updates || [];
+  if (!Array.isArray(updates) || updates.length === 0) throw new Error("updates array is required");
+
+  const updated = [];
+  for (const update of updates) {
+    const journal = findJournal(update.id || update.name || update.journalIdentifier);
+    const patch = {};
+    for (const key of ["name", "img", "flags", "ownership"]) {
+      if (update[key] !== undefined) patch[key] = update[key];
+    }
+    if (update.folder !== undefined) {
+      const folder = await resolveJournalFolder(update.folder);
+      patch.folder = folder?.id || null;
+    }
+    if (Object.keys(patch).length > 0) await journal.update(patch);
+
+    if (Array.isArray(update.deletePageIds) && update.deletePageIds.length > 0) {
+      await journal.deleteEmbeddedDocuments("JournalEntryPage", update.deletePageIds);
+    }
+    if (Array.isArray(update.deletePageNames) && update.deletePageNames.length > 0) {
+      const ids = update.deletePageNames.map((name) => findJournalPage(journal, name).id);
+      await journal.deleteEmbeddedDocuments("JournalEntryPage", ids);
+    }
+    if (Array.isArray(update.replacePages)) {
+      const pageIds = Array.from(journal.pages || []).map((page) => page.id);
+      if (pageIds.length > 0) await journal.deleteEmbeddedDocuments("JournalEntryPage", pageIds);
+      if (update.replacePages.length > 0) {
+        await journal.createEmbeddedDocuments("JournalEntryPage", update.replacePages.map(prepareJournalPageData));
+      }
+    }
+    if (Array.isArray(update.pages) && update.pages.length > 0) {
+      const pageCreates = [];
+      const pageUpdates = [];
+      for (const page of update.pages) {
+        if (page.id || page.pageIdentifier) {
+          pageUpdates.push({ ...prepareJournalPageData(page), _id: findJournalPage(journal, page.id || page.pageIdentifier).id });
+        } else if (page.name && Array.from(journal.pages || []).some((entry) => entry.name === page.name)) {
+          pageUpdates.push({ ...prepareJournalPageData(page), _id: findJournalPage(journal, page.name).id });
+        } else {
+          pageCreates.push(prepareJournalPageData(page));
+        }
+      }
+      if (pageUpdates.length > 0) await journal.updateEmbeddedDocuments("JournalEntryPage", pageUpdates);
+      if (pageCreates.length > 0) await journal.createEmbeddedDocuments("JournalEntryPage", pageCreates);
+    }
+
+    updated.push(serializeJournal(journal, { includePages: true }));
+  }
+
+  return { updated };
+}
+
+async function deleteJournals(args = {}) {
+  const ids = args.ids || [];
+  if (!Array.isArray(ids) || ids.length === 0) throw new Error("ids array is required");
+  const docs = ids.map((id) => findJournal(id));
+  await JournalEntry.deleteDocuments(docs.map((doc) => doc.id));
+  return { deleted: docs.map((doc) => ({ id: doc.id, name: doc.name })) };
 }
 
 function listActors(args = {}) {
@@ -359,12 +470,44 @@ function prepareItemData(item) {
   };
 }
 
+function prepareJournalData(journal, folder) {
+  if (!journal.name) throw new Error("Each journal requires name");
+  return {
+    name: journal.name,
+    ...(journal.img ? { img: journal.img } : {}),
+    ...(folder ? { folder: folder.id } : {}),
+    ...(journal.flags ? { flags: journal.flags } : {}),
+    ...(journal.ownership ? { ownership: journal.ownership } : {}),
+    ...(Array.isArray(journal.pages) ? { pages: journal.pages.map(prepareJournalPageData) } : {}),
+  };
+}
+
+function prepareJournalPageData(page) {
+  if (!page.name) throw new Error("Each journal page requires name");
+  const data = {};
+  for (const key of ["name", "type", "sort", "img", "title", "text", "image", "video", "src", "system", "flags"]) {
+    if (page?.[key] !== undefined) data[key] = page[key];
+  }
+  if (!data.type) data.type = "text";
+  if (page?.id !== undefined) data._id = page.id;
+  if (page?._id !== undefined) data._id = page._id;
+  return data;
+}
+
 async function resolveActorFolder(folderName) {
   if (!folderName) return null;
   const name = String(folderName);
   const existing = game.folders?.find((folder) => folder.type === "Actor" && folder.name === name);
   if (existing) return existing;
   return Folder.create({ name, type: "Actor", sorting: "a" });
+}
+
+async function resolveJournalFolder(folderName) {
+  if (!folderName) return null;
+  const name = String(folderName);
+  const existing = game.folders?.find((folder) => folder.type === "JournalEntry" && folder.name === name);
+  if (existing) return existing;
+  return Folder.create({ name, type: "JournalEntry", sorting: "a" });
 }
 
 function getWorldInfo() {
@@ -621,6 +764,32 @@ function findActor(identifier) {
   return actor;
 }
 
+function findJournal(identifier) {
+  if (!identifier) throw new Error("journalIdentifier is required");
+  const normalized = String(identifier).toLowerCase();
+  const byId = game.journal?.get(identifier);
+  if (byId) return byId;
+  const exact = game.journal?.find((entry) => entry.name?.toLowerCase() === normalized);
+  if (exact) return exact;
+  const partial = game.journal?.filter((entry) => entry.name?.toLowerCase().includes(normalized)) || [];
+  if (partial.length === 1) return partial[0];
+  if (partial.length > 1) throw new Error(`Journal identifier is ambiguous: ${identifier}`);
+  throw new Error(`Journal not found: ${identifier}`);
+}
+
+function findJournalPage(journal, identifier) {
+  if (!identifier) throw new Error("page id or name is required");
+  const normalized = String(identifier).toLowerCase();
+  const byId = journal.pages?.get(identifier);
+  if (byId) return byId;
+  const exact = Array.from(journal.pages || []).find((entry) => entry.name?.toLowerCase() === normalized);
+  if (exact) return exact;
+  const partial = Array.from(journal.pages || []).filter((entry) => entry.name?.toLowerCase().includes(normalized));
+  if (partial.length === 1) return partial[0];
+  if (partial.length > 1) throw new Error(`Journal page identifier is ambiguous on ${journal.name}: ${identifier}`);
+  throw new Error(`Journal page not found on ${journal.name}: ${identifier}`);
+}
+
 function findWorldItem(identifier) {
   if (!identifier) throw new Error("worldItemIdentifier is required");
   const normalized = String(identifier).toLowerCase();
@@ -745,6 +914,49 @@ function serializeItem(item, options = {}) {
     flags: item.flags,
     effects: options.includeEffects ? item.effects?.map(serializeEffect) : undefined,
   };
+}
+
+function serializeJournal(journal, options = {}) {
+  return {
+    id: journal.id,
+    name: journal.name,
+    img: journal.img,
+    folder: journal.folder ? { id: journal.folder.id, name: journal.folder.name } : null,
+    ownership: journal.ownership,
+    flags: journal.flags,
+    pages: options.includePages
+      ? Array.from(journal.pages || []).map(serializeJournalPage)
+      : Array.from(journal.pages || []).map((page) => ({ id: page.id, name: page.name, type: page.type, sort: page.sort })),
+  };
+}
+
+function serializeJournalPage(page) {
+  const data = page.toObject ? page.toObject() : {};
+  return {
+    id: page.id,
+    name: page.name,
+    type: page.type,
+    sort: page.sort,
+    img: page.img,
+    title: data.title || page.title,
+    text: data.text || page.text,
+    image: data.image || page.image,
+    video: data.video || page.video,
+    src: data.src || page.src,
+    system: data.system || page.system,
+    flags: page.flags,
+  };
+}
+
+function journalPageText(page) {
+  const data = page.toObject ? page.toObject() : {};
+  return [
+    page.name,
+    data.text?.content,
+    data.src,
+    data.image?.caption,
+    data.system ? JSON.stringify(data.system) : "",
+  ].filter(Boolean).join("\n");
 }
 
 function serializeEffect(effect) {
