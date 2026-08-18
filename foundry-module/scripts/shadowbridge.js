@@ -437,10 +437,83 @@ async function updateScenes(args = {}) {
       patch.folder = folder?.id || null;
     }
     if (Object.keys(patch).length > 0) await scene.update(patch);
+    if (update.backgroundTile) await upsertSceneBackgroundTile(scene, update.backgroundTile);
+    if (Array.isArray(update.deleteTileNames) && update.deleteTileNames.length > 0) {
+      const names = new Set(update.deleteTileNames.map(String));
+      const ids = Array.from(scene.tiles || []).filter((tile) => names.has(tile.name)).map((tile) => tile.id);
+      if (ids.length > 0) await scene.deleteEmbeddedDocuments("Tile", ids);
+    }
+    if (Array.isArray(update.tiles) && update.tiles.length > 0) {
+      await scene.createEmbeddedDocuments("Tile", update.tiles.map(prepareTileData));
+    }
     updated.push(serializeScene(scene));
   }
 
   return { updated };
+}
+
+async function upsertSceneBackgroundTile(scene, tile = {}) {
+  const flagScope = tile.flagScope || MODULE_ID;
+  const flagKey = tile.flagKey || "backgroundTile";
+  const name = tile.name || "Shadowbridge Scene Art";
+  const matches = Array.from(scene.tiles || []).filter((existing) => existing.getFlag?.(flagScope, flagKey) || existing.name === name);
+  if (matches.length > 1) await scene.deleteEmbeddedDocuments("Tile", matches.slice(1).map((existing) => existing.id));
+
+  const data = prepareTileData({
+    name,
+    x: tile.x ?? 0,
+    y: tile.y ?? 0,
+    width: tile.width ?? scene.width,
+    height: tile.height ?? scene.height,
+    src: tile.src || tile.img,
+    alpha: tile.alpha ?? 1,
+    hidden: tile.hidden ?? false,
+    locked: tile.locked ?? true,
+    elevation: tile.elevation ?? -100,
+    sort: tile.sort ?? -100000,
+    flags: {
+      ...(tile.flags || {}),
+      [flagScope]: {
+        ...(tile.flags?.[flagScope] || {}),
+        [flagKey]: true,
+      },
+    },
+  });
+
+  if (!data.texture?.src) throw new Error("backgroundTile requires src or img");
+  if (matches[0]) {
+    await scene.updateEmbeddedDocuments("Tile", [{ ...data, _id: matches[0].id }]);
+  } else {
+    await scene.createEmbeddedDocuments("Tile", [data]);
+  }
+}
+
+function prepareTileData(tile = {}) {
+  const data = {};
+  for (const key of [
+    "name",
+    "x",
+    "y",
+    "width",
+    "height",
+    "alpha",
+    "hidden",
+    "locked",
+    "elevation",
+    "sort",
+    "rotation",
+    "anchorX",
+    "anchorY",
+    "occlusion",
+    "restrictions",
+    "video",
+    "flags",
+  ]) {
+    if (tile[key] !== undefined) data[key] = tile[key];
+  }
+  if (tile.texture !== undefined) data.texture = tile.texture;
+  if (tile.src !== undefined || tile.img !== undefined) data.texture = { ...(data.texture || {}), src: tile.src || tile.img };
+  return data;
 }
 
 async function deleteScenes(args = {}) {
@@ -1173,6 +1246,26 @@ function serializeScene(scene) {
     darkness: scene.darkness,
     tokenVision: scene.tokenVision,
     flags: scene.flags,
+    tiles: Array.from(scene.tiles || []).map(serializeTile),
+  };
+}
+
+function serializeTile(tile) {
+  const data = tile.toObject ? tile.toObject() : {};
+  return {
+    id: tile.id,
+    name: tile.name,
+    x: tile.x,
+    y: tile.y,
+    width: tile.width,
+    height: tile.height,
+    alpha: tile.alpha,
+    hidden: tile.hidden,
+    locked: tile.locked,
+    elevation: tile.elevation,
+    sort: tile.sort,
+    texture: data.texture || tile.texture,
+    flags: tile.flags,
   };
 }
 
