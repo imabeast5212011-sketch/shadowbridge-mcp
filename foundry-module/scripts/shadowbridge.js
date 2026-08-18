@@ -640,7 +640,6 @@ function prepareSceneData(scene, folder) {
     "navigation",
     "navName",
     "navOrder",
-    "background",
     "foreground",
     "fog",
     "thumb",
@@ -656,7 +655,12 @@ function prepareSceneData(scene, folder) {
   ]) {
     if (scene?.[key] !== undefined) data[key] = scene[key];
   }
-  if (scene.img !== undefined) data.background = { ...(data.background || {}), src: scene.img };
+  if (scene.background !== undefined) {
+    for (const [key, value] of Object.entries(scene.background || {})) {
+      data[`background.${key}`] = value;
+    }
+  }
+  if (scene.img !== undefined) data["background.src"] = scene.img;
   if (folder) data.folder = folder.id;
   return data;
 }
