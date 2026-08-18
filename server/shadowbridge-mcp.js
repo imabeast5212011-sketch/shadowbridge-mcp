@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.6" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.7" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -80,6 +80,59 @@ const tools = [
         ids: { type: "array", items: { type: "string" } },
       },
       required: ["action"],
+    },
+  },
+  {
+    name: "manage_scenes",
+    description: "List, create, update, or delete Foundry Scene documents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp(["list", "create", "update", "delete"]),
+        query: stringProp("Case-insensitive scene name search."),
+        folder: stringProp("Scene folder path. Created for create/update if absent."),
+        limit: numberProp("Maximum scenes returned.", 50),
+        scenes: {
+          type: "array",
+          description: "Scenes to create. Supports name, active, navigation, background, img, width, height, padding, grid, darkness, tokenVision, notes, and flags.",
+          items: { type: "object", additionalProperties: true },
+        },
+        updates: {
+          type: "array",
+          description: "Scene updates. Each needs id, name, or sceneIdentifier. Supports folder and standard Scene fields.",
+          items: { type: "object", additionalProperties: true },
+        },
+        ids: { type: "array", items: { type: "string" } },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "upload_assets",
+    description: "Upload base64-encoded image or media assets into Foundry data storage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        source: stringProp("Foundry FilePicker source, usually data.", "data"),
+        targetDir: stringProp("Target directory inside the source."),
+        bucket: stringProp("Optional FilePicker bucket."),
+        assets: {
+          type: "array",
+          description: "Assets to upload. Each needs filename and dataBase64; mimeType is optional.",
+          items: {
+            type: "object",
+            properties: {
+              filename: { type: "string" },
+              mimeType: { type: "string" },
+              dataBase64: { type: "string" },
+            },
+            required: ["filename", "dataBase64"],
+          },
+        },
+      },
+      required: ["targetDir", "assets"],
     },
   },
   {

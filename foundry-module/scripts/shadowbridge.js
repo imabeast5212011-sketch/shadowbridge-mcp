@@ -230,6 +230,10 @@ async function dispatchCommand(method, args) {
       return manageActors(args);
     case "manage_journals":
       return manageJournals(args);
+    case "manage_scenes":
+      return manageScenes(args);
+    case "upload_assets":
+      return uploadAssets(args);
     case "search_actor_items":
       return searchActorItems(args);
     case "manage_actor_items":
@@ -375,6 +379,139 @@ async function deleteJournals(args = {}) {
   return { deleted: docs.map((doc) => ({ id: doc.id, name: doc.name })) };
 }
 
+async function manageScenes(args = {}) {
+  switch (args.action) {
+    case "list":
+      return listScenes(args);
+    case "create":
+      return createScenes(args);
+    case "update":
+      return updateScenes(args);
+    case "delete":
+      return deleteScenes(args);
+    default:
+      throw new Error(`Unsupported manage_scenes action: ${args.action}`);
+  }
+}
+
+function listScenes(args = {}) {
+  const query = String(args.query || "").toLowerCase();
+  const folderName = args.folder ? String(args.folder).toLowerCase() : null;
+  const limit = Number.isFinite(args.limit) ? Number(args.limit) : 50;
+
+  const matches = game.scenes
+    .filter((scene) => {
+      if (folderName && scene.folder?.name?.toLowerCase() !== folderName) return false;
+      if (!query) return true;
+      return scene.name?.toLowerCase().includes(query);
+    })
+    .slice(0, limit)
+    .map(serializeScene);
+
+  return { scenes: matches, totalMatches: matches.length };
+}
+
+async function createScenes(args = {}) {
+  const scenes = args.scenes || [];
+  if (!Array.isArray(scenes) || scenes.length === 0) throw new Error("scenes array is required");
+
+  const folder = await resolveSceneFolder(args.folder);
+  const docs = scenes.map((scene) => prepareSceneData(scene, folder));
+  const created = await Scene.createDocuments(docs);
+
+  return { created: created.map(serializeScene) };
+}
+
+async function updateScenes(args = {}) {
+  const updates = args.updates || [];
+  if (!Array.isArray(updates) || updates.length === 0) throw new Error("updates array is required");
+
+  const updated = [];
+  for (const update of updates) {
+    const scene = findScene(update.id || update.name || update.sceneIdentifier);
+    const patch = prepareSceneData(update, null);
+    delete patch.name;
+    if (update.name !== undefined) patch.name = update.name;
+    if (update.folder !== undefined) {
+      const folder = await resolveSceneFolder(update.folder);
+      patch.folder = folder?.id || null;
+    }
+    if (Object.keys(patch).length > 0) await scene.update(patch);
+    updated.push(serializeScene(scene));
+  }
+
+  return { updated };
+}
+
+async function deleteScenes(args = {}) {
+  const ids = args.ids || [];
+  if (!Array.isArray(ids) || ids.length === 0) throw new Error("ids array is required");
+  const docs = ids.map((id) => findScene(id));
+  await Scene.deleteDocuments(docs.map((doc) => doc.id));
+  return { deleted: docs.map((doc) => ({ id: doc.id, name: doc.name })) };
+}
+
+async function uploadAssets(args = {}) {
+  const source = args.source || "data";
+  const targetDir = String(args.targetDir || "").replaceAll("\\", "/").replace(/\/+$/, "");
+  const assets = args.assets || [];
+  if (!targetDir) throw new Error("targetDir is required");
+  if (!Array.isArray(assets) || assets.length === 0) throw new Error("assets array is required");
+
+  await ensureDirectoryPath(source, targetDir);
+
+  const uploaded = [];
+  for (const asset of assets) {
+    if (!asset.filename) throw new Error("Each asset requires filename");
+    if (!asset.dataBase64) throw new Error(`Asset ${asset.filename} requires dataBase64`);
+
+    const bytes = base64ToUint8Array(asset.dataBase64);
+    const file = new File([bytes], asset.filename, { type: asset.mimeType || guessMimeType(asset.filename) });
+    const result = await FilePicker.upload(source, targetDir, file, { bucket: args.bucket || null }, { notify: false });
+    uploaded.push({
+      filename: asset.filename,
+      path: result.path || `${targetDir}/${asset.filename}`,
+      source,
+      targetDir,
+      result,
+    });
+  }
+
+  return { uploaded };
+}
+
+async function ensureDirectoryPath(source, targetDir) {
+  const parts = targetDir.split("/").map((part) => part.trim()).filter(Boolean);
+  let current = "";
+
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    try {
+      await FilePicker.createDirectory(source, current, { notify: false });
+    } catch (error) {
+      const message = String(error?.message || error || "");
+      if (!/exist|EEXIST|already/i.test(message)) {
+        throw error;
+      }
+    }
+  }
+}
+
+function base64ToUint8Array(dataBase64) {
+  const binary = atob(dataBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function guessMimeType(filename) {
+  const lower = String(filename).toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return "application/octet-stream";
+}
+
 function listActors(args = {}) {
   const query = String(args.query || "").toLowerCase();
   const type = args.type ? String(args.type) : null;
@@ -494,20 +631,72 @@ function prepareJournalPageData(page) {
   return data;
 }
 
+function prepareSceneData(scene, folder) {
+  if (!scene.name && !scene.id && !scene.sceneIdentifier) throw new Error("Each scene requires name");
+  const data = {};
+  for (const key of [
+    "name",
+    "active",
+    "navigation",
+    "navName",
+    "navOrder",
+    "background",
+    "foreground",
+    "fog",
+    "thumb",
+    "width",
+    "height",
+    "padding",
+    "grid",
+    "darkness",
+    "globalLight",
+    "tokenVision",
+    "notes",
+    "flags",
+  ]) {
+    if (scene?.[key] !== undefined) data[key] = scene[key];
+  }
+  if (scene.img !== undefined) data.background = { ...(data.background || {}), src: scene.img };
+  if (folder) data.folder = folder.id;
+  return data;
+}
+
 async function resolveActorFolder(folderName) {
   if (!folderName) return null;
-  const name = String(folderName);
-  const existing = game.folders?.find((folder) => folder.type === "Actor" && folder.name === name);
-  if (existing) return existing;
-  return Folder.create({ name, type: "Actor", sorting: "a" });
+  return resolveFolderPath(String(folderName), "Actor");
 }
 
 async function resolveJournalFolder(folderName) {
   if (!folderName) return null;
-  const name = String(folderName);
-  const existing = game.folders?.find((folder) => folder.type === "JournalEntry" && folder.name === name);
-  if (existing) return existing;
-  return Folder.create({ name, type: "JournalEntry", sorting: "a" });
+  return resolveFolderPath(String(folderName), "JournalEntry");
+}
+
+async function resolveSceneFolder(folderName) {
+  if (!folderName) return null;
+  return resolveFolderPath(String(folderName), "Scene");
+}
+
+async function resolveFolderPath(folderPath, type) {
+  const parts = folderPath.split("/").map((part) => part.trim()).filter(Boolean);
+  let parent = null;
+
+  for (const name of parts) {
+    let folder = game.folders?.find((entry) => {
+      const parentId = entry.folder?.id || entry.parent?.id || entry.folder || null;
+      return entry.type === type && entry.name === name && parentId === (parent?.id || null);
+    });
+    if (!folder) {
+      folder = await Folder.create({
+        name,
+        type,
+        folder: parent?.id || null,
+        sorting: "a",
+      });
+    }
+    parent = folder;
+  }
+
+  return parent;
 }
 
 function getWorldInfo() {
@@ -790,6 +979,19 @@ function findJournalPage(journal, identifier) {
   throw new Error(`Journal page not found on ${journal.name}: ${identifier}`);
 }
 
+function findScene(identifier) {
+  if (!identifier) throw new Error("sceneIdentifier is required");
+  const normalized = String(identifier).toLowerCase();
+  const byId = game.scenes?.get(identifier);
+  if (byId) return byId;
+  const exact = game.scenes?.find((entry) => entry.name?.toLowerCase() === normalized);
+  if (exact) return exact;
+  const partial = game.scenes?.filter((entry) => entry.name?.toLowerCase().includes(normalized)) || [];
+  if (partial.length === 1) return partial[0];
+  if (partial.length > 1) throw new Error(`Scene identifier is ambiguous: ${identifier}`);
+  throw new Error(`Scene not found: ${identifier}`);
+}
+
 function findWorldItem(identifier) {
   if (!identifier) throw new Error("worldItemIdentifier is required");
   const normalized = String(identifier).toLowerCase();
@@ -945,6 +1147,28 @@ function serializeJournalPage(page) {
     src: data.src || page.src,
     system: data.system || page.system,
     flags: page.flags,
+  };
+}
+
+function serializeScene(scene) {
+  const data = scene.toObject ? scene.toObject() : {};
+  return {
+    id: scene.id,
+    name: scene.name,
+    active: scene.active,
+    navigation: scene.navigation,
+    navName: scene.navName,
+    folder: scene.folder ? { id: scene.folder.id, name: scene.folder.name } : null,
+    background: data.background || scene.background,
+    foreground: data.foreground || scene.foreground,
+    thumb: scene.thumb || data.thumb,
+    width: scene.width,
+    height: scene.height,
+    padding: scene.padding,
+    grid: scene.grid,
+    darkness: scene.darkness,
+    tokenVision: scene.tokenVision,
+    flags: scene.flags,
   };
 }
 
