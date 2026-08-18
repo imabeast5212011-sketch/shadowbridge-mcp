@@ -437,6 +437,7 @@ async function updateScenes(args = {}) {
       patch.folder = folder?.id || null;
     }
     if (Object.keys(patch).length > 0) await scene.update(patch);
+    if (update.backgroundLevel) await upsertSceneBackgroundLevel(scene, update.backgroundLevel);
     if (update.backgroundTile) await upsertSceneBackgroundTile(scene, update.backgroundTile);
     if (Array.isArray(update.deleteTileNames) && update.deleteTileNames.length > 0) {
       const names = new Set(update.deleteTileNames.map(String));
@@ -450,6 +451,60 @@ async function updateScenes(args = {}) {
   }
 
   return { updated };
+}
+
+async function upsertSceneBackgroundLevel(scene, level = {}) {
+  const flagScope = level.flagScope || MODULE_ID;
+  const flagKey = level.flagKey || "backgroundLevel";
+  const name = level.name || "Shadowbridge Background";
+  const levels = getSceneLevels(scene);
+  const matches = levels.filter((existing) => existing.getFlag?.(flagScope, flagKey) || existing.name === name);
+  if (matches.length > 1) await scene.deleteEmbeddedDocuments("Level", matches.slice(1).map((existing) => existing.id));
+
+  const data = prepareLevelData({
+    ...level,
+    name,
+    flags: {
+      ...(level.flags || {}),
+      [flagScope]: {
+        ...(level.flags?.[flagScope] || {}),
+        [flagKey]: true,
+      },
+    },
+  });
+
+  if (!data.background?.src) throw new Error("backgroundLevel requires background.src, src, or img");
+  if (matches[0]) {
+    await scene.updateEmbeddedDocuments("Level", [{ ...data, _id: matches[0].id }]);
+  } else {
+    await scene.createEmbeddedDocuments("Level", [data]);
+  }
+}
+
+function getSceneLevels(scene) {
+  try {
+    return Array.from(scene.getEmbeddedCollection?.("Level") || scene.levels || []);
+  } catch {
+    return Array.from(scene.levels || []);
+  }
+}
+
+function prepareLevelData(level = {}) {
+  const src = level.src || level.img || level.background?.src;
+  const data = {};
+  for (const key of ["name", "sort", "elevation", "textures", "visibility", "flags"]) {
+    if (level[key] !== undefined) data[key] = level[key];
+  }
+  data.background = {
+    src,
+    tint: level.background?.tint || "#ffffff",
+    alphaThreshold: level.background?.alphaThreshold ?? 0.75,
+    color: level.background?.color ?? 0,
+    ...(level.background || {}),
+  };
+  if (level.foreground !== undefined) data.foreground = level.foreground;
+  if (level.fog !== undefined) data.fog = level.fog;
+  return data;
 }
 
 async function upsertSceneBackgroundTile(scene, tile = {}) {
@@ -1257,7 +1312,24 @@ function serializeScene(scene) {
     tokenVision: scene.tokenVision,
     weather: scene.weather,
     flags: scene.flags,
+    levels: getSceneLevels(scene).map(serializeLevel),
     tiles: Array.from(scene.tiles || []).map(serializeTile),
+  };
+}
+
+function serializeLevel(level) {
+  const data = level.toObject ? level.toObject() : {};
+  return {
+    id: level.id,
+    name: level.name,
+    sort: level.sort,
+    background: data.background || level.background,
+    foreground: data.foreground || level.foreground,
+    fog: data.fog || level.fog,
+    textures: data.textures || level.textures,
+    elevation: data.elevation || level.elevation,
+    visibility: data.visibility || level.visibility,
+    flags: level.flags,
   };
 }
 

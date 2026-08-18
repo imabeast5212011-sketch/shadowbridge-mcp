@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.10" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.11" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -100,7 +100,7 @@ const tools = [
         },
         updates: {
           type: "array",
-          description: "Scene updates. Each needs id, name, or sceneIdentifier. Supports folder, standard Scene fields, backgroundTile, deleteTileNames, and tiles.",
+          description: "Scene updates. Each needs id, name, or sceneIdentifier. Supports folder, standard Scene fields, backgroundLevel, backgroundTile, deleteTileNames, and tiles.",
           items: { type: "object", additionalProperties: true },
         },
         ids: { type: "array", items: { type: "string" } },
