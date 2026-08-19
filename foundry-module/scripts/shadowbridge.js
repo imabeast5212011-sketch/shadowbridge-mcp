@@ -1,5 +1,6 @@
 const MODULE_ID = "shadowbridge-mcp";
 const ENCOUNTER_DIRECTOR_MODULE_ID = "cinematic-encounter-director";
+const EXALTED_SCENES_MODULE_ID = "exalted-scenes";
 const DEFAULT_SERVER_URL = "http://127.0.0.1:31777";
 const DEFAULT_POLL_MS = 1000;
 
@@ -251,6 +252,8 @@ async function dispatchCommand(method, args) {
       return getCurrentScene(args);
     case "manage_encounter_director":
       return manageEncounterDirector(args);
+    case "manage_exalted_scenes":
+      return manageExaltedScenes(args);
     default:
       throw new Error(`Unknown Shadowbridge command: ${method}`);
   }
@@ -391,6 +394,156 @@ function requireDirectorScene(args = {}) {
   const scene = getDirectorScene(args);
   if (!scene) throw new Error("No active scene. Provide sceneIdentifier or activate a scene first.");
   return scene;
+}
+
+async function manageExaltedScenes(args = {}) {
+  switch (args.action) {
+    case "inspect":
+      return inspectExaltedScenes();
+    case "broadcast_scene":
+      return callExaltedApi(["broadcast", "scene"], [requireString(args.sceneId, "sceneId")]);
+    case "stop_broadcast":
+      return callExaltedApi(["broadcast", "stop"], []);
+    case "play_slideshow":
+      return callExaltedApi(["slideshows", "play"], [requireString(args.slideshowId, "slideshowId")]);
+    case "stop_slideshow":
+      return callExaltedApi(["slideshows", "stop"], []);
+    case "start_sequence":
+      return callExaltedApi(["sequences", "start"], [requireString(args.sceneId, "sceneId"), args.options || {}]);
+    case "stop_sequence":
+      return callExaltedApi(["sequences", "stop"], []);
+    case "next_sequence":
+      return callExaltedApi(["sequences", "next"], []);
+    case "previous_sequence":
+      return callExaltedApi(["sequences", "previous"], []);
+    case "go_to_sequence":
+      return callExaltedApi(["sequences", "goTo"], [Number(args.index ?? 0)]);
+    case "start_cast_only": {
+      const characterIds = Array.isArray(args.characterIds) ? args.characterIds.map(String).filter(Boolean) : [];
+      if (characterIds.length === 0) throw new Error("start_cast_only requires characterIds.");
+      return callExaltedApi(["castOnly", "start"], [characterIds, args.layoutSettings || {}]);
+    }
+    case "stop_cast_only":
+      return callExaltedApi(["castOnly", "stop"], []);
+    case "play_scene_audio":
+      return callExaltedApi(["audio", "playSceneAudio"], [requireString(args.sceneId, "sceneId")]);
+    case "restore_scene_audio":
+      return callExaltedApi(["audio", "restoreSceneAudio"], [requireString(args.sceneId, "sceneId"), args.options || {}]);
+    case "stop_audio":
+      return callExaltedApi(["audio", "stopAll"], [args.sceneId || undefined]);
+    case "play_soundboard_sound":
+      return callExaltedApi(["audio", "playSoundboardSound"], [requireString(args.soundId, "soundId")]);
+    case "set_volume":
+      return callExaltedApi(["audio", "setVolume"], [Number(args.volume ?? 1)]);
+    default:
+      throw new Error(`Unsupported manage_exalted_scenes action: ${args.action}`);
+  }
+}
+
+function inspectExaltedScenes() {
+  const module = game.modules?.get(EXALTED_SCENES_MODULE_ID);
+  const detected = detectExaltedApi();
+  const api = detected.api;
+  const capabilities = api ? describeKnownExaltedCapabilities(api) : [];
+  return {
+    module: {
+      id: EXALTED_SCENES_MODULE_ID,
+      title: module?.title || "",
+      installed: Boolean(module),
+      active: module?.active === true,
+      version: module?.version || "",
+    },
+    api: {
+      detected: Boolean(api),
+      source: detected.source,
+      methods: api ? describeApiTree(api) : [],
+      capabilities,
+    },
+  };
+}
+
+function callExaltedApi(path, callArgs) {
+  const status = inspectExaltedScenes();
+  if (!status.module.installed) throw new Error("Exalted Scenes is not installed.");
+  if (!status.module.active) throw new Error("Exalted Scenes is not active.");
+  const detected = detectExaltedApi();
+  if (!detected.api) throw new Error("Exalted Scenes public API was not detected.");
+  const owner = path.slice(0, -1).reduce((value, key) => value?.[key], detected.api);
+  const fn = owner?.[path.at(-1)];
+  const method = path.join(".");
+  if (typeof fn !== "function") throw new Error(`Exalted Scenes API method is unavailable: ${method}`);
+  return Promise.resolve(fn.apply(owner, callArgs)).then((result) => ({
+    ok: true,
+    method,
+    args: summarizeCallArgs(callArgs),
+    apiSource: detected.source,
+    result,
+  }));
+}
+
+function detectExaltedApi() {
+  const moduleApi = game.modules?.get(EXALTED_SCENES_MODULE_ID)?.api;
+  const candidates = [
+    ["game.modules.get(\"exalted-scenes\").api", moduleApi],
+    ["globalThis.ExaltedScenes.api", globalThis.ExaltedScenes?.api],
+    ["globalThis.ExaltedScenes", globalThis.ExaltedScenes],
+    ["globalThis.exaltedScenes.api", globalThis.exaltedScenes?.api],
+    ["globalThis.exaltedScenes", globalThis.exaltedScenes],
+    ["game.exaltedScenes.api", globalThis.game?.exaltedScenes?.api],
+    ["game.exaltedScenes", globalThis.game?.exaltedScenes],
+    ["game.exalted?.scenes?.api", globalThis.game?.exalted?.scenes?.api],
+    ["game.exalted?.scenes", globalThis.game?.exalted?.scenes],
+  ];
+  const found = candidates.find(([, api]) => api && typeof api === "object");
+  return { source: found?.[0] || "", api: found?.[1] || null };
+}
+
+function describeKnownExaltedCapabilities(api) {
+  const checks = [
+    ["broadcast.scene", ["broadcast", "scene"]],
+    ["broadcast.stop", ["broadcast", "stop"]],
+    ["slideshows.play", ["slideshows", "play"]],
+    ["slideshows.stop", ["slideshows", "stop"]],
+    ["sequences.start", ["sequences", "start"]],
+    ["sequences.stop", ["sequences", "stop"]],
+    ["sequences.next", ["sequences", "next"]],
+    ["sequences.previous", ["sequences", "previous"]],
+    ["sequences.goTo", ["sequences", "goTo"]],
+    ["castOnly.start", ["castOnly", "start"]],
+    ["castOnly.stop", ["castOnly", "stop"]],
+    ["audio.playSceneAudio", ["audio", "playSceneAudio"]],
+    ["audio.restoreSceneAudio", ["audio", "restoreSceneAudio"]],
+    ["audio.stopAll", ["audio", "stopAll"]],
+    ["audio.playSoundboardSound", ["audio", "playSoundboardSound"]],
+    ["audio.setVolume", ["audio", "setVolume"]],
+  ];
+  return checks.filter(([, path]) => typeof path.reduce((value, key) => value?.[key], api) === "function").map(([capability]) => capability);
+}
+
+function describeApiTree(value, prefix = [], depth = 0, output = []) {
+  if (!value || typeof value !== "object" || depth > 2) return output;
+  for (const key of Object.keys(value).sort()) {
+    if (key.startsWith("_")) continue;
+    const entry = value[key];
+    const path = [...prefix, key];
+    if (typeof entry === "function") output.push(path.join("."));
+    else if (entry && typeof entry === "object") describeApiTree(entry, path, depth + 1, output);
+  }
+  return output;
+}
+
+function summarizeCallArgs(callArgs = []) {
+  return callArgs.map((value) => {
+    if (Array.isArray(value)) return value;
+    if (!value || typeof value !== "object") return value;
+    return { keys: Object.keys(value).sort() };
+  });
+}
+
+function requireString(value, label) {
+  const text = String(value || "").trim();
+  if (!text) throw new Error(`${label} is required.`);
+  return text;
 }
 
 async function manageActors(args = {}) {

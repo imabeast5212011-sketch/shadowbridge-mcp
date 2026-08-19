@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.12" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.13" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -295,6 +295,44 @@ const tools = [
           description: "Optional Director API options. Only known Director options are used by the Foundry-side handler.",
           additionalProperties: true,
         },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "manage_exalted_scenes",
+    description: "Inspect and call known Exalted Scenes public API presentation/audio controls through a GM browser client.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp([
+          "inspect",
+          "broadcast_scene",
+          "stop_broadcast",
+          "play_slideshow",
+          "stop_slideshow",
+          "start_sequence",
+          "stop_sequence",
+          "next_sequence",
+          "previous_sequence",
+          "go_to_sequence",
+          "start_cast_only",
+          "stop_cast_only",
+          "play_scene_audio",
+          "restore_scene_audio",
+          "stop_audio",
+          "play_soundboard_sound",
+          "set_volume",
+        ]),
+        sceneId: stringProp("Exalted Scenes scene/presentation id."),
+        slideshowId: stringProp("Exalted Scenes slideshow id."),
+        soundId: stringProp("Exalted Scenes soundboard sound id."),
+        characterIds: { type: "array", description: "Character ids for cast-only mode.", items: { type: "string" } },
+        layoutSettings: { type: "object", description: "Cast-only layout settings.", additionalProperties: true },
+        options: { type: "object", description: "Supported Exalted Scenes options for the selected action.", additionalProperties: true },
+        index: numberProp("Sequence index for go_to_sequence.", 0),
+        volume: numberProp("Audio volume for set_volume.", 1),
       },
       required: ["action"],
     },
