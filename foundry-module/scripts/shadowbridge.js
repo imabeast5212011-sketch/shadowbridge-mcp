@@ -236,6 +236,8 @@ async function dispatchCommand(method, args) {
       return manageScenes(args);
     case "upload_assets":
       return uploadAssets(args);
+    case "find_foundry_assets":
+      return findFoundryAssets(args);
     case "search_actor_items":
       return searchActorItems(args);
     case "manage_actor_items":
@@ -254,6 +256,8 @@ async function dispatchCommand(method, args) {
       return manageEncounterDirector(args);
     case "manage_exalted_scenes":
       return manageExaltedScenes(args);
+    case "setup_koczech_phase1":
+      return setupKoczechPhase1(args);
     default:
       throw new Error(`Unknown Shadowbridge command: ${method}`);
   }
@@ -926,7 +930,613 @@ function guessMimeType(filename) {
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".ogg")) return "audio/ogg";
+  if (lower.endsWith(".wav")) return "audio/wav";
   return "application/octet-stream";
+}
+
+async function findFoundryAssets(args = {}) {
+  const filenames = Array.isArray(args.filenames) ? args.filenames.map(String).filter(Boolean) : [];
+  if (filenames.length === 0) throw new Error("filenames array is required");
+
+  const source = args.source || "data";
+  const bucket = args.bucket || null;
+  const roots = Array.isArray(args.searchRoots) && args.searchRoots.length
+    ? args.searchRoots.map(String)
+    : [`worlds/${game.world?.id || ""}`, "assets", "uploads"];
+  const maxDepth = Number.isFinite(args.maxDepth) ? Number(args.maxDepth) : 8;
+  const wanted = new Map(filenames.map((filename) => [filename.toLocaleLowerCase(), filename]));
+  const matches = Object.fromEntries(filenames.map((filename) => [filename, []]));
+  const visited = new Set();
+  const searched = [];
+  const errors = [];
+
+  async function browseDir(target, depth) {
+    const normalizedTarget = String(target || "").replaceAll("\\", "/").replace(/\/+$/, "");
+    if (depth > maxDepth || visited.has(normalizedTarget)) return;
+    visited.add(normalizedTarget);
+    let result = null;
+    try {
+      result = await FilePicker.browse(source, normalizedTarget, bucket ? { bucket } : {});
+      searched.push(normalizedTarget);
+    } catch (error) {
+      errors.push({ target: normalizedTarget, message: error?.message || String(error) });
+      return;
+    }
+
+    for (const filePath of result.files || []) {
+      const base = decodeURIComponent(String(filePath).split("/").pop() || "");
+      const requested = wanted.get(base.toLocaleLowerCase());
+      if (requested && !matches[requested].includes(filePath)) matches[requested].push(filePath);
+    }
+    for (const dir of result.dirs || []) {
+      await browseDir(dir, depth + 1);
+    }
+  }
+
+  for (const root of roots) await browseDir(root, 0);
+
+  const found = {};
+  const missing = [];
+  for (const filename of filenames) {
+    if (matches[filename].length) found[filename] = matches[filename][0];
+    else missing.push(filename);
+  }
+  return { source, roots, searched, found, matches, missing, errors };
+}
+
+const KOCZECH_PHASE1_FILES = Object.freeze([
+  "Lerisure hall.png",
+  "The wall.png",
+  "ALU'VADIR (The Pens) Track 6 — _Green Pickle Sandwich_ Gruk — 2005.mp3",
+  "Grukrul’A (Radio Fuck you Edit).mp3",
+  "Klaxon Warning Siren.mp3",
+  "Generic Solvekian Soldier(m).png",
+  "Generic Solvekian Soldier(f).png",
+  "sabatour.png",
+  "Stalker.png",
+  "Winged harvester.png",
+]);
+
+async function setupKoczechPhase1(args = {}) {
+  const assetPaths = args.assetPaths || {};
+  const missingFiles = KOCZECH_PHASE1_FILES.filter((filename) => !assetPaths[filename]);
+  if (missingFiles.length) {
+    return {
+      ok: false,
+      message: "No changes made. Missing required Phase 1 asset paths.",
+      missingFiles,
+    };
+  }
+
+  const sceneFolder = args.sceneFolder || "COTS/Memory One-Shot — Fall of FOB Koczech/Scenes";
+  const actorFolder = args.actorFolder || "COTS/Memory One-Shot — Fall of FOB Koczech/Actors — Crowd";
+  const report = {
+    ok: true,
+    scenes: {},
+    playlists: {},
+    macros: {},
+    actors: {},
+    crowdTokens: {},
+    enemyImageUpdates: {},
+    missingEnemyActors: [],
+    manualSteps: [],
+    excludedAssets: ["The Wall Falls.mp3"],
+  };
+
+  const leisure = await upsertKoczechScene({
+    name: "Memory 01 — FOB Koczech Leisure Hall",
+    background: assetPaths["Lerisure hall.png"],
+    emergencyLighting: false,
+    folder: sceneFolder,
+  });
+  report.scenes.leisureHall = leisure.summary;
+
+  const wall = await upsertKoczechScene({
+    name: "Memory 03 — Western Wall of FOB Koczech",
+    background: assetPaths["The wall.png"],
+    emergencyLighting: true,
+    folder: sceneFolder,
+  });
+  report.scenes.westernWall = wall.summary;
+
+  report.playlists.leisureMusic = await upsertKoczechPlaylist("Koczech Leisure Hall Music", [
+    {
+      name: "ALU'VADIR (The Pens) Track 6 — _Green Pickle Sandwich_ Gruk — 2005",
+      filename: "ALU'VADIR (The Pens) Track 6 — _Green Pickle Sandwich_ Gruk — 2005.mp3",
+      path: assetPaths["ALU'VADIR (The Pens) Track 6 — _Green Pickle Sandwich_ Gruk — 2005.mp3"],
+      repeat: false,
+    },
+    {
+      name: "Grukrul’A (Radio Fuck you Edit)",
+      filename: "Grukrul’A (Radio Fuck you Edit).mp3",
+      path: assetPaths["Grukrul’A (Radio Fuck you Edit).mp3"],
+      repeat: false,
+    },
+  ], "sequential");
+  report.playlists.klaxon = await upsertKoczechPlaylist("Koczech Alarm Klaxon", [
+    {
+      name: "Klaxon Warning Siren",
+      filename: "Klaxon Warning Siren.mp3",
+      path: assetPaths["Klaxon Warning Siren.mp3"],
+      repeat: true,
+    },
+  ], "simultaneous");
+
+  const male = await upsertGenericSolvekianSoldier("Generic Solvekian Soldier — Male", assetPaths["Generic Solvekian Soldier(m).png"], actorFolder);
+  const female = await upsertGenericSolvekianSoldier("Generic Solvekian Soldier — Female", assetPaths["Generic Solvekian Soldier(f).png"], actorFolder);
+  report.actors.male = male.summary;
+  report.actors.female = female.summary;
+
+  report.crowdTokens = await placeKoczechCrowdTokens(leisure.scene, male.actor, female.actor);
+
+  report.enemyImageUpdates.saboteur = await updateEnemyActorImage("Turned Solvekian Saboteur", assetPaths["sabatour.png"], ["sabatour", "saboteur"]);
+  report.enemyImageUpdates.stalker = await updateEnemyActorImage("Umbra Stalker", assetPaths["Stalker.png"], ["stalker"]);
+  report.enemyImageUpdates.wingedHarvester = await updateEnemyActorImage("Umbra Winged Harvester", assetPaths["Winged harvester.png"], ["winged harvester", "harvester"]);
+  for (const [key, value] of Object.entries(report.enemyImageUpdates)) {
+    if (!value.updated) report.missingEnemyActors.push({ key, requestedName: value.requestedName, reason: value.reason });
+  }
+
+  report.macros.alarm = await upsertKoczechMacro("Koczech Phase 1 — Alarm Trigger", koczechAlarmMacroCommand());
+  report.macros.wallTransition = await upsertKoczechMacro("Koczech Phase 1 — Transition to Wall", koczechWallTransitionMacroCommand());
+
+  if (report.missingEnemyActors.length) report.manualSteps.push("Some enemy actors were not found by exact/loose name; image updates for those entries were skipped.");
+  report.manualSteps.push("Journals were not created or revealed. Fire existing journals manually.");
+  report.manualSteps.push("No enemies were spawned and combat was not started.");
+  return report;
+}
+
+async function upsertKoczechScene({ name, background, emergencyLighting, folder }) {
+  let scene = game.scenes?.find((entry) => entry.name === name);
+  const folderDoc = await resolveSceneFolder(folder);
+  const dimensions = await imageDimensions(background);
+  const data = {
+    name,
+    ...(folderDoc ? { folder: folderDoc.id } : {}),
+    "background.src": background,
+    thumb: background,
+    padding: 0,
+    tokenVision: false,
+    backgroundColor: "#000000",
+    darkness: emergencyLighting ? 0.72 : 0.18,
+    "grid.type": globalThis.CONST?.GRID_TYPES?.SQUARE ?? 1,
+    "grid.size": 100,
+    "grid.color": "#88a2bf",
+    "grid.alpha": 0.06,
+    initial: {
+      x: Math.round((dimensions.width || scene?.width || 1448) / 2),
+      y: Math.round((dimensions.height || scene?.height || 1086) / 2),
+      scale: 0.6,
+    },
+    flags: {
+      ...(scene?.flags || {}),
+      cotsMemory: {
+        sequence: "Memory One-Shot — Fall of FOB Koczech",
+        purpose: name.includes("Leisure") ? "Opening roleplay, false normalcy, rumors, player soldier assignment." : "Phase 1 wall transition staging. No wall combat starts here.",
+        lighting: emergencyLighting ? "Emergency red lighting and searchlights. Klaxon continues." : "Cool blue/white military leisure hall lighting. No emergency red yet.",
+        grid: "usable but visually subtle",
+      },
+    },
+  };
+  if (dimensions.width && dimensions.height) {
+    data.width = dimensions.width;
+    data.height = dimensions.height;
+  }
+
+  if (scene) {
+    await scene.update(data);
+  } else {
+    const created = await Scene.createDocuments([undotCreateData(data)]);
+    scene = created[0];
+  }
+
+  await upsertSceneBackgroundLevel(scene, {
+    name: "Level",
+    src: background,
+    flagScope: MODULE_ID,
+    flagKey: "backgroundLevel",
+    background: { src: background, tint: "#ffffff", alphaThreshold: 0.75, color: "#000000" },
+    textures: { fit: "fill", anchorX: 0.5, anchorY: 0.5, offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotation: 0 },
+    elevation: { bottom: 0, top: 20 },
+    visibility: { levels: [] },
+    flags: {
+      cotsMemory: {
+        sequence: "Memory One-Shot — Fall of FOB Koczech",
+        sceneBackground: true,
+      },
+    },
+  });
+  await upsertKoczechSceneLights(scene, emergencyLighting);
+  return { scene, summary: compactScene(scene) };
+}
+
+function undotCreateData(data) {
+  const output = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!key.includes(".")) {
+      output[key] = value;
+      continue;
+    }
+    const parts = key.split(".");
+    let target = output;
+    while (parts.length > 1) {
+      const part = parts.shift();
+      target[part] ||= {};
+      target = target[part];
+    }
+    target[parts[0]] = value;
+  }
+  return output;
+}
+
+async function imageDimensions(src) {
+  try {
+    const texture = await globalThis.loadTexture?.(src);
+    const width = Math.round(texture?.baseTexture?.realWidth || texture?.width || 0);
+    const height = Math.round(texture?.baseTexture?.realHeight || texture?.height || 0);
+    return { width, height };
+  } catch {
+    return { width: 0, height: 0 };
+  }
+}
+
+async function upsertKoczechSceneLights(scene, emergencyLighting) {
+  const width = scene.width || 1448;
+  const height = scene.height || 1086;
+  const normalHidden = emergencyLighting;
+  const emergencyHidden = !emergencyLighting;
+  const specs = [
+    lightSpec("Koczech Cool Hall Light NW", "normal", 0.25, 0.28, "#b8dcff", 0.42, 620, 180, normalHidden, "none"),
+    lightSpec("Koczech Cool Hall Light NE", "normal", 0.72, 0.30, "#c7e7ff", 0.38, 660, 190, normalHidden, "none"),
+    lightSpec("Koczech Cool Hall Light SW", "normal", 0.30, 0.70, "#b5d7ff", 0.32, 520, 150, normalHidden, "none"),
+    lightSpec("Koczech Cool Hall Light SE", "normal", 0.70, 0.68, "#cdeaff", 0.32, 520, 150, normalHidden, "none"),
+    lightSpec("Koczech Emergency Red West", "emergency", 0.16, 0.42, "#ff1f24", 0.76, 720, 120, emergencyHidden, "pulse"),
+    lightSpec("Koczech Emergency Red East", "emergency", 0.84, 0.45, "#ff1f24", 0.76, 720, 120, emergencyHidden, "pulse"),
+    lightSpec("Koczech Emergency Red Center", "emergency", 0.50, 0.58, "#ff2b30", 0.62, 640, 100, emergencyHidden, "pulse"),
+  ];
+  if (emergencyLighting) {
+    specs.push(
+      lightSpec("Koczech Wall Searchlight Left", "searchlight", 0.28, 0.34, "#e8f6ff", 0.62, 820, 260, false, "siren"),
+      lightSpec("Koczech Wall Searchlight Right", "searchlight", 0.72, 0.34, "#e8f6ff", 0.62, 820, 260, false, "siren"),
+    );
+  }
+
+  const existing = getSceneLights(scene);
+  const creates = [];
+  const updates = [];
+  const seenIds = new Set();
+  for (const spec of specs) {
+    const data = {
+      name: spec.name,
+      x: Math.round(width * spec.rx),
+      y: Math.round(height * spec.ry),
+      hidden: spec.hidden,
+      config: {
+        dim: spec.dim,
+        bright: spec.bright,
+        color: spec.color,
+        alpha: spec.alpha,
+        angle: 360,
+        luminosity: 0.5,
+        coloration: 1,
+        animation: spec.animation === "none" ? { type: "" } : { type: spec.animation, speed: 4, intensity: 6 },
+      },
+      flags: {
+        [MODULE_ID]: {
+          koczechPhase1Light: true,
+          koczechRole: spec.role,
+        },
+      },
+    };
+    const matches = existing.filter((light) => light.name === spec.name || (light.getFlag?.(MODULE_ID, "koczechPhase1Light") && light.getFlag?.(MODULE_ID, "koczechRole") === spec.role && !seenIds.has(light.id)));
+    if (matches[0]) {
+      seenIds.add(matches[0].id);
+      updates.push({ ...data, _id: matches[0].id });
+      if (matches.length > 1) {
+        await scene.deleteEmbeddedDocuments("AmbientLight", matches.slice(1).map((light) => light.id));
+      }
+    } else {
+      creates.push(data);
+    }
+  }
+  if (updates.length) await scene.updateEmbeddedDocuments("AmbientLight", updates);
+  if (creates.length) await scene.createEmbeddedDocuments("AmbientLight", creates);
+}
+
+function lightSpec(name, role, rx, ry, color, alpha, dim, bright, hidden, animation) {
+  return { name, role, rx, ry, color, alpha, dim, bright, hidden, animation };
+}
+
+function getSceneLights(scene) {
+  try {
+    return Array.from(scene.getEmbeddedCollection?.("AmbientLight") || scene.lights || []);
+  } catch {
+    return Array.from(scene.lights || []);
+  }
+}
+
+async function upsertKoczechPlaylist(name, sounds, modeName) {
+  const modes = globalThis.CONST?.PLAYLIST_MODES || {};
+  const mode = modeName === "simultaneous" ? (modes.SIMULTANEOUS ?? 3) : (modes.SEQUENTIAL ?? 1);
+  let playlist = game.playlists?.find((entry) => entry.name === name);
+  if (!playlist) playlist = await Playlist.create({ name, mode, flags: { [MODULE_ID]: { koczechPhase1: true } } });
+  else await playlist.update({ mode, flags: { ...(playlist.flags || {}), [MODULE_ID]: { ...(playlist.flags?.[MODULE_ID] || {}), koczechPhase1: true } } });
+
+  const changed = [];
+  for (const sound of sounds) {
+    const existing = Array.from(playlist.sounds || []).find((entry) => entry.path === sound.path || entry.name === sound.name || entry.name === sound.filename);
+    const data = {
+      name: sound.name,
+      path: sound.path,
+      repeat: sound.repeat,
+      volume: 0.8,
+      playing: false,
+      flags: {
+        [MODULE_ID]: {
+          koczechPhase1: true,
+          exactFilename: sound.filename,
+          loopPlaylist: name === "Koczech Leisure Hall Music",
+        },
+      },
+    };
+    if (existing) {
+      await playlist.updateEmbeddedDocuments("PlaylistSound", [{ ...data, _id: existing.id }]);
+      changed.push({ id: existing.id, name: data.name, path: data.path, updated: true });
+    } else {
+      const created = await playlist.createEmbeddedDocuments("PlaylistSound", [data]);
+      changed.push({ id: created[0]?.id, name: data.name, path: data.path, created: true });
+    }
+  }
+  return { id: playlist.id, name: playlist.name, mode, sounds: changed };
+}
+
+async function upsertKoczechMacro(name, command) {
+  let macro = game.macros?.find((entry) => entry.name === name);
+  const data = {
+    name,
+    type: "script",
+    scope: "global",
+    command,
+    ownership: { default: 0, [game.user?.id]: 3 },
+    flags: { [MODULE_ID]: { koczechPhase1: true } },
+  };
+  if (macro) {
+    await macro.update(data);
+    return { id: macro.id, name: macro.name, updated: true };
+  }
+  macro = await Macro.create(data);
+  return { id: macro.id, name: macro.name, created: true };
+}
+
+function koczechAlarmMacroCommand() {
+  return `(async () => {
+  if (!game.user?.isGM) return ui.notifications?.warn("GM only.");
+  const SCOPE = "shadowbridge-mcp";
+  const scene = canvas.scene || game.scenes.active;
+  const music = game.playlists.find((p) => p.name === "Koczech Leisure Hall Music");
+  if (music?.stopAll) await music.stopAll();
+  if (scene) {
+    const updates = Array.from(scene.lights || []).filter((light) => light.getFlag?.(SCOPE, "koczechPhase1Light")).map((light) => {
+      const role = light.getFlag(SCOPE, "koczechRole");
+      return { _id: light.id, hidden: role === "normal" };
+    });
+    if (updates.length) await scene.updateEmbeddedDocuments("AmbientLight", updates);
+    await scene.update({ darkness: 0.65 });
+  }
+  const klaxon = game.playlists.find((p) => p.name === "Koczech Alarm Klaxon");
+  if (klaxon) {
+    if (klaxon.stopAll) await klaxon.stopAll();
+    const sound = Array.from(klaxon.sounds || []).find((entry) => entry.name === "Klaxon Warning Siren" || String(entry.path || "").includes("Klaxon"));
+    if (sound && klaxon.playSound) await klaxon.playSound(sound);
+    else if (klaxon.playAll) await klaxon.playAll();
+  }
+  await ChatMessage.create({ content: "<strong>PA:</strong> Attention. Enemy inbound. Report to combat stations.<br><strong>PA:</strong> Western perimeter, report to defensive stations. Medical personnel to triage. This is not a drill." });
+})();`;
+}
+
+function koczechWallTransitionMacroCommand() {
+  return `(async () => {
+  if (!game.user?.isGM) return ui.notifications?.warn("GM only.");
+  const scene = game.scenes.find((entry) => entry.name === "Memory 03 — Western Wall of FOB Koczech");
+  if (!scene) return ui.notifications?.error("Memory 03 — Western Wall of FOB Koczech was not found.");
+  const SCOPE = "shadowbridge-mcp";
+  const updates = Array.from(scene.lights || []).filter((light) => light.getFlag?.(SCOPE, "koczechPhase1Light")).map((light) => {
+    const role = light.getFlag(SCOPE, "koczechRole");
+    return { _id: light.id, hidden: role === "normal" ? true : false };
+  });
+  if (updates.length) await scene.updateEmbeddedDocuments("AmbientLight", updates);
+  await scene.update({ darkness: 0.72 });
+  await scene.activate();
+  const klaxon = game.playlists.find((p) => p.name === "Koczech Alarm Klaxon");
+  if (klaxon) {
+    const sound = Array.from(klaxon.sounds || []).find((entry) => entry.name === "Klaxon Warning Siren" || String(entry.path || "").includes("Klaxon"));
+    if (sound && klaxon.playSound) await klaxon.playSound(sound);
+    else if (klaxon.playAll) await klaxon.playAll();
+  }
+})();`;
+}
+
+async function upsertGenericSolvekianSoldier(name, imagePath, folderPath) {
+  const folder = await resolveActorFolder(folderPath);
+  let actor = game.actors?.find((entry) => entry.name === name);
+  const data = genericSolvekianSoldierData(name, imagePath, folder);
+  if (actor) {
+    await actor.update({
+      img: data.img,
+      folder: data.folder,
+      system: data.system,
+      prototypeToken: data.prototypeToken,
+      ownership: data.ownership,
+      flags: data.flags,
+    });
+  } else {
+    actor = (await Actor.createDocuments([data]))[0];
+  }
+  await ensureSoldierItems(actor);
+  return { actor, summary: serializeActor(actor, { includeItems: true, includeEffects: true }) };
+}
+
+function genericSolvekianSoldierData(name, imagePath, folder) {
+  return {
+    name,
+    type: "npc",
+    img: imagePath,
+    ...(folder ? { folder: folder.id } : {}),
+    ownership: { default: 0, [game.user?.id]: 3 },
+    prototypeToken: {
+      name,
+      actorLink: false,
+      disposition: globalThis.CONST?.TOKEN_DISPOSITIONS?.FRIENDLY ?? 1,
+      texture: { src: imagePath },
+      width: 1,
+      height: 1,
+    },
+    flags: { [MODULE_ID]: { koczechPhase1: true, commonSoldier: true } },
+    system: {
+      abilities: {
+        str: { value: 11 },
+        dex: { value: 14 },
+        con: { value: 12 },
+        int: { value: 10 },
+        wis: { value: 11 },
+        cha: { value: 10 },
+      },
+      attributes: {
+        ac: { calc: "flat", flat: 14 },
+        hp: { value: 12, max: 12 },
+        movement: { walk: 30, units: "ft" },
+      },
+      details: {
+        type: { value: "humanoid", subtype: "Solvekian", custom: "Medium humanoid" },
+        alignment: "Friendly/Neutral",
+      },
+      traits: {
+        size: "med",
+        languages: { value: [], custom: "Solvekian" },
+      },
+      skills: {
+        prc: { value: 0, ability: "wis", prof: 1 },
+        ath: { value: 0, ability: "str", prof: 1 },
+      },
+    },
+  };
+}
+
+async function ensureSoldierItems(actor) {
+  const itemData = [
+    soldierWeapon("Laser Carbine", "rwak", "dex", 70, 210, "1d10", "radiant", "Ranged Weapon Attack: +4 to hit, range 70/210 ft., one target. Hit: 1d10 radiant damage."),
+    soldierWeapon("Sidearm", "rwak", "dex", 40, 120, "1d8", "radiant", "Ranged Weapon Attack: +4 to hit, range 40/120 ft., one target. Hit: 1d8 radiant damage."),
+    soldierWeapon("Rifle Butt", "mwak", "str", 5, null, "1d6", "bludgeoning", "Melee Weapon Attack: +2 to hit, reach 5 ft., one target. Hit: 1d6 bludgeoning damage."),
+    soldierFeature("Base Training", "The soldier has advantage on ability checks made to follow simple battlefield orders, carry supplies, or hold formation with other Solvekian soldiers."),
+    soldierFeature("First Contact Panic", "The first time this soldier sees an Umbra creature or a turned Solvekian soldier attack an ally, it must succeed on a DC 12 Wisdom saving throw or become frightened until the end of its next turn."),
+  ];
+  for (const item of itemData) {
+    const existing = actor.items?.find((entry) => entry.name === item.name);
+    if (existing) await actor.updateEmbeddedDocuments("Item", [{ ...item, _id: existing.id }]);
+    else await actor.createEmbeddedDocuments("Item", [item]);
+  }
+}
+
+function soldierWeapon(name, actionType, ability, range, longRange, damageDie, damageType, description) {
+  return {
+    name,
+    type: "weapon",
+    system: {
+      description: { value: `<p>${description}</p>` },
+      activation: { type: "action", cost: 1 },
+      target: { value: 1, type: "creature" },
+      range: { value: range, long: longRange ?? null, units: "ft" },
+      ability,
+      actionType,
+      proficient: true,
+      equipped: true,
+      damage: { parts: [[damageDie, damageType]], versatile: "" },
+    },
+  };
+}
+
+function soldierFeature(name, description) {
+  return {
+    name,
+    type: "feat",
+    system: {
+      description: { value: `<p>${description}</p>` },
+      activation: { type: "special", cost: 0 },
+    },
+  };
+}
+
+async function placeKoczechCrowdTokens(scene, maleActor, femaleActor) {
+  const existing = Array.from(scene.tokens || []).filter((token) => token.getFlag?.(MODULE_ID, "koczechCrowd"));
+  if (existing.length) await scene.deleteEmbeddedDocuments("Token", existing.map((token) => token.id));
+  const width = scene.width || 1448;
+  const height = scene.height || 1086;
+  const spots = [
+    ["tables", 0.26, 0.45, maleActor],
+    ["tables", 0.34, 0.53, femaleActor],
+    ["tables", 0.53, 0.46, maleActor],
+    ["tables", 0.61, 0.56, femaleActor],
+    ["bar/serving area", 0.78, 0.34, maleActor],
+    ["bar/serving area", 0.84, 0.48, femaleActor],
+    ["lounge corner", 0.18, 0.72, maleActor],
+    ["lounge corner", 0.38, 0.78, femaleActor],
+    ["wall consoles", 0.72, 0.70, maleActor],
+    ["entry/exit area", 0.90, 0.62, femaleActor],
+  ];
+  const tokens = spots.map(([area, rx, ry, actor], index) => ({
+    name: `${actor.name} ${index + 1}`,
+    actorId: actor.id,
+    actorLink: false,
+    x: Math.round(width * rx),
+    y: Math.round(height * ry),
+    width: 1,
+    height: 1,
+    disposition: globalThis.CONST?.TOKEN_DISPOSITIONS?.FRIENDLY ?? 1,
+    texture: { src: actor.prototypeToken?.texture?.src || actor.img },
+    flags: {
+      [MODULE_ID]: {
+        koczechCrowd: true,
+        koczechPhase1: true,
+        area,
+      },
+    },
+  }));
+  const created = await scene.createEmbeddedDocuments("Token", tokens);
+  return {
+    scene: compactScene(scene),
+    deletedExisting: existing.length,
+    placed: created.length,
+    male: created.filter((token) => token.actorId === maleActor.id).length,
+    female: created.filter((token) => token.actorId === femaleActor.id).length,
+    areas: spots.map(([area]) => area),
+  };
+}
+
+async function updateEnemyActorImage(requestedName, imagePath, looseTerms = []) {
+  const actor = findActorLoose(requestedName, looseTerms);
+  if (!actor) return { requestedName, updated: false, reason: "not found" };
+  await actor.update({ img: imagePath, "prototypeToken.texture.src": imagePath });
+  const sceneTokenUpdates = [];
+  for (const scene of game.scenes || []) {
+    const matching = getMatchingTokens(scene, actor);
+    if (!matching.length) continue;
+    await scene.updateEmbeddedDocuments("Token", matching.map((token) => ({ _id: token.id, "texture.src": imagePath })));
+    sceneTokenUpdates.push({ scene: scene.name, tokens: matching.length });
+  }
+  return { requestedName, updated: true, actor: compactActor(actor), imagePath, sceneTokenUpdates };
+}
+
+function findActorLoose(requestedName, looseTerms = []) {
+  const normalized = requestedName.toLocaleLowerCase();
+  const exact = game.actors?.find((entry) => entry.name?.toLocaleLowerCase() === normalized);
+  if (exact) return exact;
+  const terms = [normalized, ...looseTerms.map((term) => String(term).toLocaleLowerCase())];
+  for (const term of terms) {
+    const matches = game.actors?.filter((entry) => entry.name?.toLocaleLowerCase().includes(term)) || [];
+    if (matches.length === 1) return matches[0];
+  }
+  return null;
 }
 
 function listActors(args = {}) {
