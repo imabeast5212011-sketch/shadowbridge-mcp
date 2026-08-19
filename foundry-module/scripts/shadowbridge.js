@@ -258,6 +258,8 @@ async function dispatchCommand(method, args) {
       return manageExaltedScenes(args);
     case "setup_koczech_phase1":
       return setupKoczechPhase1(args);
+    case "convert_koczech_phase1_to_director":
+      return convertKoczechPhase1ToDirector(args);
     default:
       throw new Error(`Unknown Shadowbridge command: ${method}`);
   }
@@ -1085,6 +1087,208 @@ async function setupKoczechPhase1(args = {}) {
   report.manualSteps.push("Journals were not created or revealed. Fire existing journals manually.");
   report.manualSteps.push("No enemies were spawned and combat was not started.");
   return report;
+}
+
+async function convertKoczechPhase1ToDirector(args = {}) {
+  const leisure = game.scenes?.find((entry) => entry.name === "Memory 01 — FOB Koczech Leisure Hall");
+  const wall = game.scenes?.find((entry) => entry.name === "Memory 03 — Western Wall of FOB Koczech");
+  if (!leisure) throw new Error("Memory 01 — FOB Koczech Leisure Hall was not found.");
+  if (!wall) throw new Error("Memory 03 — Western Wall of FOB Koczech was not found.");
+
+  const music = game.playlists?.find((entry) => entry.name === "Koczech Leisure Hall Music");
+  const klaxon = game.playlists?.find((entry) => entry.name === "Koczech Alarm Klaxon");
+  if (!music) throw new Error("Koczech Leisure Hall Music playlist was not found.");
+  if (!klaxon) throw new Error("Koczech Alarm Klaxon playlist was not found.");
+
+  const klaxonSound = Array.from(klaxon.sounds || []).find((entry) => entry.name === "Klaxon Warning Siren" || String(entry.path || "").includes("Klaxon"));
+  const leisureNormal = getKoczechLightUuids(leisure, ["normal"]);
+  const leisureEmergency = getKoczechLightUuids(leisure, ["emergency"]);
+  const wallNormal = getKoczechLightUuids(wall, ["normal"]);
+  const wallEmergency = getKoczechLightUuids(wall, ["emergency", "searchlight"]);
+
+  await setKoczechWallLightsSteady(wall);
+
+  const sequence = buildKoczechPhase1DirectorSequence({
+    leisure,
+    wall,
+    music,
+    klaxon,
+    klaxonSound,
+    leisureNormal,
+    leisureEmergency,
+    wallNormal,
+    wallEmergency,
+  });
+
+  const api = requireEncounterDirectorMethod("upsertSequence");
+  const saved = await api.upsertSequence(sequence, { scene: leisure, replace: true });
+
+  let deletedMacros = [];
+  if (args.deleteTemporaryMacros !== false) {
+    deletedMacros = await deleteKoczechTemporaryMacros();
+  }
+
+  return {
+    ok: true,
+    sequence: {
+      id: saved.id,
+      name: saved.name,
+      sceneUuid: saved.sceneUuid,
+      beatCount: saved.beats?.length ?? sequence.beats.length,
+      actionCount: sequence.beats.reduce((total, beat) => total + beat.actions.length, 0),
+    },
+    scene: compactScene(leisure),
+    wall: compactScene(wall),
+    playlists: {
+      music: { id: music.id, uuid: music.uuid, name: music.name },
+      klaxon: { id: klaxon.id, uuid: klaxon.uuid, name: klaxon.name, soundId: klaxonSound?.id || "" },
+    },
+    lights: {
+      leisureNormal: leisureNormal.length,
+      leisureEmergency: leisureEmergency.length,
+      wallNormal: wallNormal.length,
+      wallEmergency: wallEmergency.length,
+      wallFlashingRemoved: true,
+    },
+    deletedTemporaryMacros: deletedMacros,
+    notes: [
+      "Director sequence created on the Leisure Hall scene.",
+      "No journal reveal actions were created.",
+      "No enemy spawn or combat actions were created.",
+      "Wall emergency/search lights were set to steady animation.",
+    ],
+  };
+}
+
+function getKoczechLightUuids(scene, roles = []) {
+  const allowed = new Set(roles);
+  return getSceneLights(scene)
+    .filter((light) => {
+      if (!light.getFlag?.(MODULE_ID, "koczechPhase1Light")) return false;
+      return allowed.has(light.getFlag(MODULE_ID, "koczechRole"));
+    })
+    .map((light) => light.uuid || `Scene.${scene.id}.AmbientLight.${light.id}`);
+}
+
+async function setKoczechWallLightsSteady(scene) {
+  const updates = getSceneLights(scene)
+    .filter((light) => light.getFlag?.(MODULE_ID, "koczechPhase1Light"))
+    .map((light) => ({
+      _id: light.id,
+      "config.animation.type": "",
+      "config.animation.speed": 0,
+      "config.animation.intensity": 0,
+    }));
+  if (updates.length) await scene.updateEmbeddedDocuments("AmbientLight", updates);
+  return updates.length;
+}
+
+async function deleteKoczechTemporaryMacros() {
+  const names = new Set(["Koczech Phase 1 — Alarm Trigger", "Koczech Phase 1 — Transition to Wall"]);
+  const macros = game.macros?.filter((macro) => names.has(macro.name)) || [];
+  if (macros.length) await Macro.deleteDocuments(macros.map((macro) => macro.id));
+  return macros.map((macro) => ({ id: macro.id, name: macro.name }));
+}
+
+function buildKoczechPhase1DirectorSequence({
+  leisure,
+  wall,
+  music,
+  klaxon,
+  klaxonSound,
+  leisureNormal,
+  leisureEmergency,
+  wallNormal,
+  wallEmergency,
+}) {
+  const beats = [
+    {
+      id: "beat-koczech-phase1-start-state",
+      name: "Leisure Hall Start State",
+      description: "Normal leisure hall state: cool white/blue light, subtle grid, music running. No red alarm yet.",
+      actions: [
+        directorAction("action-koczech-start-activate-leisure", "native.activateScene", "Activate Leisure Hall", { sceneUuid: leisure.uuid }),
+        directorAction("action-koczech-start-darkness", "native.setSceneDarkness", "Normal leisure hall lighting", { sceneUuid: leisure.uuid, darkness: 0.18 }),
+        directorAction("action-koczech-start-normal-lights", "native.updateAmbientLights", "Enable cool hall lights", { lightUuids: leisureNormal, updates: { hidden: false } }),
+        directorAction("action-koczech-start-hide-red", "native.updateAmbientLights", "Hide emergency red lights", { lightUuids: leisureEmergency, updates: { hidden: true } }),
+        directorAction("action-koczech-start-music", "native.playlistCue", "Start Leisure Hall music", { playlistUuid: music.uuid, operation: "play" }),
+        directorAction("action-koczech-start-note", "native.note", "GM note: no journals", { message: "Phase 1 start state. Journals are manual; no combat or enemies." }),
+      ],
+    },
+    {
+      id: "beat-koczech-phase1-alarm",
+      name: "Koczech Phase 1 — Alarm Trigger",
+      description: "Stop leisure music, cut normal lights, flash red alarm lights, start klaxon, and post PA warning. No journals, enemies, or combat.",
+      actions: [
+        directorAction("action-koczech-alarm-stop-music", "native.playlistCue", "Stop Leisure Hall music", { playlistUuid: music.uuid, operation: "stop" }),
+        directorAction("action-koczech-alarm-dim-scene", "native.setSceneDarkness", "Dim Leisure Hall", { sceneUuid: leisure.uuid, darkness: 0.65 }),
+        directorAction("action-koczech-alarm-cut-normal", "native.updateAmbientLights", "Cut normal hall lights", { lightUuids: leisureNormal, updates: { hidden: true } }),
+        directorAction("action-koczech-alarm-red-lights", "native.updateAmbientLights", "Flash red emergency lights", {
+          lightUuids: leisureEmergency,
+          updates: {
+            hidden: false,
+            "config.animation.type": "pulse",
+            "config.animation.speed": 4,
+            "config.animation.intensity": 6,
+          },
+        }),
+        directorAction("action-koczech-alarm-klaxon", "native.playlistCue", "Start Klaxon Warning Siren", { playlistUuid: klaxon.uuid, soundId: klaxonSound?.id || "", operation: "play" }),
+        directorAction("action-koczech-alarm-pa", "native.chatMessage", "PA warning", {
+          whisperGmOnly: false,
+          message: "PA: Attention. Enemy inbound. Report to combat stations. Western perimeter, report to defensive stations. Medical personnel to triage. This is not a drill.",
+        }),
+      ],
+    },
+    {
+      id: "beat-koczech-phase1-wall-transition",
+      name: "Koczech Phase 1 — Transition to Wall",
+      description: "Move to the Western Wall scene, keep klaxon looping, use steady red/search lighting, and do not start wall combat.",
+      actions: [
+        directorAction("action-koczech-wall-activate", "native.activateScene", "Activate Western Wall", { sceneUuid: wall.uuid }),
+        directorAction("action-koczech-wall-darkness", "native.setSceneDarkness", "Emergency wall darkness", { sceneUuid: wall.uuid, darkness: 0.72 }),
+        directorAction("action-koczech-wall-hide-normal", "native.updateAmbientLights", "Hide normal wall lights", { lightUuids: wallNormal, updates: { hidden: true, "config.animation.type": "", "config.animation.speed": 0, "config.animation.intensity": 0 } }),
+        directorAction("action-koczech-wall-steady-emergency", "native.updateAmbientLights", "Steady red/search lighting", { lightUuids: wallEmergency, updates: { hidden: false, "config.animation.type": "", "config.animation.speed": 0, "config.animation.intensity": 0 } }),
+        directorAction("action-koczech-wall-klaxon", "native.playlistCue", "Keep Klaxon Warning Siren running", { playlistUuid: klaxon.uuid, soundId: klaxonSound?.id || "", operation: "play" }),
+        directorAction("action-koczech-wall-note", "native.note", "GM note: hold combat", { message: "Transition only. Do not spawn enemies, reveal journals, start combat, or play The Wall Falls.mp3." }),
+      ],
+    },
+  ].map((beat, index) => ({
+    ...beat,
+    order: index,
+    actionIds: beat.actions.map((action) => action.id),
+    stopPointAfter: true,
+    continueOnActionFailure: false,
+    dangerLevel: "changesScene",
+  }));
+
+  return {
+    id: "sequence-koczech-phase1",
+    name: "Koczech Phase 1 — Leisure Hall Alarm",
+    description: "Click-through Phase 1 control sequence for FOB Koczech: start state, alarm, wall transition. Journals remain manual.",
+    sceneUuid: leisure.uuid,
+    startingBeatId: beats[0].id,
+    beatIds: beats.map((beat) => beat.id),
+    beats,
+    tags: ["koczech", "phase-1", "memory"],
+    gmNotes: "No journal reveal, no enemy spawn, no combat start. The Wall Falls.mp3 is intentionally unused.",
+    enabled: true,
+    archived: false,
+  };
+}
+
+function directorAction(id, type, name, config) {
+  return {
+    id,
+    type,
+    name,
+    adapter: "foundry-native",
+    config,
+    enabled: true,
+    requiresConfirmation: false,
+    failurePolicy: "stop",
+    executionMode: "sequential",
+    rollbackSupported: type === "native.setSceneDarkness" || type === "native.updateAmbientLights" || type === "native.playlistCue",
+  };
 }
 
 async function upsertKoczechScene({ name, background, emergencyLighting, folder }) {
