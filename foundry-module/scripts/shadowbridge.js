@@ -1,4 +1,5 @@
 const MODULE_ID = "shadowbridge-mcp";
+const ENCOUNTER_DIRECTOR_MODULE_ID = "cinematic-encounter-director";
 const DEFAULT_SERVER_URL = "http://127.0.0.1:31777";
 const DEFAULT_POLL_MS = 1000;
 
@@ -248,6 +249,8 @@ async function dispatchCommand(method, args) {
       return updateTokenImage(args);
     case "get_current_scene":
       return getCurrentScene(args);
+    case "manage_encounter_director":
+      return manageEncounterDirector(args);
     default:
       throw new Error(`Unknown Shadowbridge command: ${method}`);
   }
@@ -255,6 +258,139 @@ async function dispatchCommand(method, args) {
 
 function assertGM() {
   if (!game.user?.isGM) throw new Error("Shadowbridge commands require an active GM client.");
+}
+
+async function manageEncounterDirector(args = {}) {
+  switch (args.action) {
+    case "inspect":
+      return inspectEncounterDirector(args);
+    case "open": {
+      const api = requireEncounterDirectorMethod("openDirector");
+      api.openDirector(args.options || {});
+      return { opened: true, ...(await inspectEncounterDirector(args)) };
+    }
+    case "get_authoring_context":
+      return requireEncounterDirectorMethod("getEncounterAuthoringContext").getEncounterAuthoringContext();
+    case "read_action_catalog":
+      return requireEncounterDirectorMethod("readActionTypeCatalog").readActionTypeCatalog();
+    case "list_sequences": {
+      const api = requireEncounterDirectorMethod("readSequenceMetadata");
+      const scene = getDirectorScene(args);
+      return {
+        ...(await inspectEncounterDirector(args)),
+        sequences: await api.readSequenceMetadata(scene ?? undefined),
+      };
+    }
+    case "export": {
+      const api = requireEncounterDirectorMethod("exportEncounterJson");
+      const scene = getDirectorScene(args);
+      const options = { ...(args.options || {}) };
+      if (args.sequenceId) options.sequenceId = args.sequenceId;
+      if (scene) options.scene = scene;
+      return api.exportEncounterJson(options);
+    }
+    case "validate": {
+      const input = getEncounterPackageInput(args);
+      return requireEncounterDirectorMethod("validateEncounterJson").validateEncounterJson(input);
+    }
+    case "import": {
+      const input = getEncounterPackageInput(args);
+      const api = requireEncounterDirectorMethod("importEncounterJson");
+      return api.importEncounterJson(input, {
+        scene: requireDirectorScene(args),
+        mode: args.mode || "duplicate",
+      });
+    }
+    case "upsert_sequence": {
+      if (!args.sequence || typeof args.sequence !== "object" || Array.isArray(args.sequence)) {
+        throw new Error("manage_encounter_director upsert_sequence requires a sequence object.");
+      }
+      const api = requireEncounterDirectorMethod("upsertSequence");
+      return api.upsertSequence(args.sequence, {
+        scene: requireDirectorScene(args),
+        replace: args.replace !== false,
+      });
+    }
+    case "dry_run":
+    case "run": {
+      if (!args.sequenceId || !args.beatId) throw new Error(`${args.action} requires sequenceId and beatId.`);
+      const api = requireEncounterDirectorMethod("requestExecution");
+      return api.requestExecution({
+        sequenceId: args.sequenceId,
+        beatId: args.beatId,
+        actionId: args.actionId || "",
+        dryRun: args.action === "dry_run",
+        scene: requireDirectorScene(args),
+      });
+    }
+    case "evaluate_triggers":
+      return requireEncounterDirectorMethod("evaluateTriggers").evaluateTriggers(getDirectorScene(args) ?? undefined);
+    case "reset_trigger_state": {
+      if (!args.sequenceId) throw new Error("reset_trigger_state requires sequenceId.");
+      return requireEncounterDirectorMethod("resetTriggerState").resetTriggerState(args.sequenceId, requireDirectorScene(args));
+    }
+    default:
+      throw new Error(`Unsupported manage_encounter_director action: ${args.action}`);
+  }
+}
+
+async function inspectEncounterDirector(args = {}) {
+  const module = game.modules?.get(ENCOUNTER_DIRECTOR_MODULE_ID);
+  const api = module?.api || null;
+  const scene = getDirectorScene(args);
+  const result = {
+    module: {
+      id: ENCOUNTER_DIRECTOR_MODULE_ID,
+      title: module?.title || "",
+      installed: Boolean(module),
+      active: module?.active === true,
+      version: module?.version || "",
+      apiDetected: Boolean(api),
+      apiMethods: api ? publicApiMethodNames(api) : [],
+    },
+    activeScene: game.scenes?.active ? compactScene(game.scenes.active) : null,
+    selectedScene: scene ? compactScene(scene) : null,
+  };
+
+  if (module?.active && api?.readSequenceMetadata && scene) {
+    result.sequences = await api.readSequenceMetadata(scene);
+  }
+
+  return result;
+}
+
+function requireEncounterDirectorMethod(methodName) {
+  const module = game.modules?.get(ENCOUNTER_DIRECTOR_MODULE_ID);
+  if (!module) throw new Error("Cinematic Encounter Director is not installed.");
+  if (!module.active) throw new Error("Cinematic Encounter Director is not active.");
+  const api = module.api;
+  if (!api) throw new Error("Cinematic Encounter Director public API was not detected. Refresh the Foundry browser after updating the module.");
+  if (typeof api[methodName] !== "function") throw new Error(`Cinematic Encounter Director API is missing ${methodName}().`);
+  return api;
+}
+
+function publicApiMethodNames(api) {
+  return Object.entries(Object.getOwnPropertyDescriptors(api))
+    .filter(([, descriptor]) => typeof descriptor.value === "function")
+    .map(([name]) => name)
+    .sort();
+}
+
+function getEncounterPackageInput(args = {}) {
+  const input = args.packageJson ?? args.input ?? args.encounterJson;
+  if (input === undefined) throw new Error("packageJson is required.");
+  return input;
+}
+
+function getDirectorScene(args = {}) {
+  if (args.sceneIdentifier) return findScene(args.sceneIdentifier);
+  return game.scenes?.active || null;
+}
+
+function requireDirectorScene(args = {}) {
+  const scene = getDirectorScene(args);
+  if (!scene) throw new Error("No active scene. Provide sceneIdentifier or activate a scene first.");
+  return scene;
 }
 
 async function manageActors(args = {}) {
@@ -1386,6 +1522,10 @@ function compactActor(actor) {
 
 function compactDocument(document) {
   return { id: document.id, name: document.name, type: document.documentName || document.type };
+}
+
+function compactScene(scene) {
+  return { id: scene.id, name: scene.name, uuid: scene.uuid, active: scene.active };
 }
 
 function compactToken(token) {

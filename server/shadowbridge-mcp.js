@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.11" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.12" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -254,6 +254,49 @@ const tools = [
         includeTokens: boolProp("Include scene tokens.", true),
         includeHidden: boolProp("Include hidden tokens.", false),
       },
+    },
+  },
+  {
+    name: "manage_encounter_director",
+    description: "Use Cinematic Encounter Director's GM-safe public API for authoring context, JSON validation/import/export, sequence metadata, and reviewed execution.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp([
+          "inspect",
+          "open",
+          "get_authoring_context",
+          "read_action_catalog",
+          "list_sequences",
+          "export",
+          "validate",
+          "import",
+          "upsert_sequence",
+          "dry_run",
+          "run",
+          "evaluate_triggers",
+          "reset_trigger_state",
+        ]),
+        sceneIdentifier: stringProp("Optional scene name or id. Defaults to the active scene."),
+        sequenceId: stringProp("Encounter Director sequence id."),
+        beatId: stringProp("Encounter Director beat id."),
+        actionId: stringProp("Optional Encounter Director action id for single-action execution."),
+        packageJson: { description: "Encounter Director package as a JSON string or plain object for validate/import." },
+        sequence: {
+          type: "object",
+          description: "Encounter Director sequence object for upsert_sequence.",
+          additionalProperties: true,
+        },
+        mode: enumProp(["duplicate", "replace"]),
+        replace: boolProp("For upsert_sequence: replace an existing sequence with the same id.", true),
+        options: {
+          type: "object",
+          description: "Optional Director API options. Only known Director options are used by the Foundry-side handler.",
+          additionalProperties: true,
+        },
+      },
+      required: ["action"],
     },
   },
 ];
