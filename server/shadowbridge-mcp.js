@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.15" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.16" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -106,6 +106,73 @@ const tools = [
         ids: { type: "array", items: { type: "string" } },
       },
       required: ["action"],
+    },
+  },
+  {
+    name: "inspect_scene",
+    description: "Inspect one Foundry Scene and its embedded Tokens, AmbientLights, and Regions without activating it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        sceneIdentifier: stringProp("Scene name or id."),
+        includeTokens: boolProp("Include embedded Tokens.", true),
+        includeLights: boolProp("Include embedded AmbientLights.", true),
+        includeRegions: boolProp("Include embedded Regions.", true),
+      },
+      required: ["sceneIdentifier"],
+    },
+  },
+  {
+    name: "manage_scene_tokens",
+    description: "List, create, update, or delete Tokens on a specific Foundry Scene without activating it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp(["list", "create", "update", "delete"]),
+        sceneIdentifier: stringProp("Scene name or id."),
+        tag: stringProp("Optional Shadowbridge preparation tag used for replacement or deletion."),
+        replaceExisting: boolProp("For create: delete Tokens carrying the same preparation tag first.", false),
+        tokens: {
+          type: "array",
+          description: "Tokens to create. Each requires actorUuid/actorIdentifier plus x/y; safe Token overrides are supported.",
+          items: { type: "object", additionalProperties: true },
+        },
+        updates: {
+          type: "array",
+          description: "Token updates. Each needs id, uuid, name, or tokenIdentifier.",
+          items: { type: "object", additionalProperties: true },
+        },
+        ids: { type: "array", items: { type: "string" } },
+      },
+      required: ["action", "sceneIdentifier"],
+    },
+  },
+  {
+    name: "manage_scene_regions",
+    description: "List, create, update, or delete Regions on a specific Foundry Scene without activating it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp(["list", "create", "update", "delete"]),
+        sceneIdentifier: stringProp("Scene name or id."),
+        tag: stringProp("Optional Shadowbridge preparation tag used for replacement or deletion."),
+        replaceExisting: boolProp("For create: delete Regions carrying the same preparation tag first.", false),
+        regions: {
+          type: "array",
+          description: "Regions to create. Supports name, color, visibility, elevation, shapes, behaviors, and flags.",
+          items: { type: "object", additionalProperties: true },
+        },
+        updates: {
+          type: "array",
+          description: "Region updates. Each needs id, uuid, name, or regionIdentifier.",
+          items: { type: "object", additionalProperties: true },
+        },
+        ids: { type: "array", items: { type: "string" } },
+      },
+      required: ["action", "sceneIdentifier"],
     },
   },
   {

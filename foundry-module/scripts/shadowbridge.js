@@ -234,6 +234,12 @@ async function dispatchCommand(method, args) {
       return manageJournals(args);
     case "manage_scenes":
       return manageScenes(args);
+    case "inspect_scene":
+      return inspectScene(args);
+    case "manage_scene_tokens":
+      return manageSceneTokens(args);
+    case "manage_scene_regions":
+      return manageSceneRegions(args);
     case "upload_assets":
       return uploadAssets(args);
     case "find_foundry_assets":
@@ -687,6 +693,240 @@ async function manageScenes(args = {}) {
     default:
       throw new Error(`Unsupported manage_scenes action: ${args.action}`);
   }
+}
+
+function requireScene(identifier) {
+  if (!identifier) throw new Error("sceneIdentifier is required");
+  return findScene(identifier);
+}
+
+function collectionEntries(collection) {
+  try {
+    return Array.from(collection || []);
+  } catch (_error) {
+    return [];
+  }
+}
+
+function serializeSceneToken(token) {
+  return {
+    ...compactToken(token),
+    uuid: token.uuid,
+    actorId: token.actorId,
+    actorName: token.actor?.name || "",
+    actorLink: token.actorLink,
+    x: token.x,
+    y: token.y,
+    width: token.width,
+    height: token.height,
+    hidden: token.hidden,
+    disposition: token.disposition,
+    elevation: token.elevation,
+    rotation: token.rotation,
+    texture: token.texture?.toObject ? token.texture.toObject() : token.texture,
+    flags: token.flags,
+  };
+}
+
+function serializeSceneRegion(region) {
+  const data = region.toObject ? region.toObject() : {};
+  return {
+    id: region.id,
+    uuid: region.uuid,
+    name: region.name,
+    color: region.color ?? data.color,
+    visibility: region.visibility ?? data.visibility,
+    elevation: data.elevation ?? region.elevation,
+    shapes: data.shapes ?? region.shapes,
+    behaviors: data.behaviors ?? region.behaviors,
+    flags: region.flags,
+  };
+}
+
+function serializeSceneLight(light) {
+  const data = light.toObject ? light.toObject() : {};
+  return {
+    id: light.id,
+    uuid: light.uuid,
+    x: light.x,
+    y: light.y,
+    elevation: light.elevation,
+    hidden: light.hidden,
+    config: data.config ?? light.config,
+    flags: light.flags,
+  };
+}
+
+function inspectScene(args = {}) {
+  const scene = requireScene(args.sceneIdentifier);
+  return {
+    scene: serializeScene(scene),
+    tokens: args.includeTokens === false ? undefined : collectionEntries(scene.tokens).map(serializeSceneToken),
+    lights: args.includeLights === false ? undefined : collectionEntries(scene.lights).map(serializeSceneLight),
+    regions: args.includeRegions === false ? undefined : collectionEntries(scene.regions).map(serializeSceneRegion),
+  };
+}
+
+function scenePreparationTag(document) {
+  return String(document.getFlag?.(MODULE_ID, "scenePreparationTag") || document.flags?.[MODULE_ID]?.scenePreparationTag || "");
+}
+
+function mergeFlags(base, extra, tag) {
+  const merge = globalThis.foundry?.utils?.mergeObject;
+  const flags = typeof merge === "function"
+    ? merge(base || {}, extra || {}, { inplace: false, recursive: true })
+    : { ...(base || {}), ...(extra || {}) };
+  if (tag) flags[MODULE_ID] = { ...(flags[MODULE_ID] || {}), scenePreparationTag: tag };
+  return flags;
+}
+
+function findSceneToken(scene, identifier) {
+  const text = String(identifier || "").trim();
+  if (!text) throw new Error("Token identifier is required.");
+  const byId = scene.tokens?.get?.(text);
+  if (byId) return byId;
+  const lower = text.toLowerCase();
+  const exact = collectionEntries(scene.tokens).find((token) => token.uuid === text || token.name?.toLowerCase() === lower);
+  if (exact) return exact;
+  throw new Error(`Token not found on ${scene.name}: ${identifier}`);
+}
+
+function tokenPatch(source = {}) {
+  const patch = {};
+  for (const key of ["name", "actorLink", "x", "y", "width", "height", "hidden", "disposition", "elevation", "rotation", "alpha", "texture", "flags"]) {
+    if (source[key] !== undefined) patch[key] = source[key];
+  }
+  return patch;
+}
+
+async function resolveTokenActor(spec = {}) {
+  const actorUuid = String(spec.actorUuid || "").trim();
+  if (actorUuid) {
+    const actor = await globalThis.fromUuid?.(actorUuid);
+    if (actor?.documentName === "Actor") return actor;
+    throw new Error(`Actor UUID could not be resolved: ${actorUuid}`);
+  }
+  return findActor(spec.actorIdentifier || spec.actorId || spec.actorName);
+}
+
+async function manageSceneTokens(args = {}) {
+  const scene = requireScene(args.sceneIdentifier);
+  const tag = String(args.tag || "").trim();
+  if (args.action === "list") return { scene: compactScene(scene), tokens: collectionEntries(scene.tokens).map(serializeSceneToken) };
+
+  if (args.action === "create") {
+    if (!Array.isArray(args.tokens) || !args.tokens.length) throw new Error("tokens array is required");
+    let deletedExisting = 0;
+    if (args.replaceExisting && tag) {
+      const existing = collectionEntries(scene.tokens).filter((token) => scenePreparationTag(token) === tag);
+      if (existing.length) await scene.deleteEmbeddedDocuments("Token", existing.map((token) => token.id));
+      deletedExisting = existing.length;
+    }
+    const documents = [];
+    for (const spec of args.tokens) {
+      const actor = await resolveTokenActor(spec);
+      const x = Number(spec.x);
+      const y = Number(spec.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error(`Token ${spec.name || actor.name} requires finite x and y coordinates.`);
+      if (x < 0 || y < 0 || x > scene.width || y > scene.height) throw new Error(`Token ${spec.name || actor.name} coordinates fall outside ${scene.name}.`);
+      const overrides = tokenPatch({ ...spec, x, y, actorLink: spec.actorLink === true });
+      delete overrides.flags;
+      const prototype = actor.getTokenDocument ? await actor.getTokenDocument(overrides) : actor.prototypeToken;
+      const data = prototype?.toObject ? prototype.toObject() : { ...(prototype || {}) };
+      delete data._id;
+      Object.assign(data, overrides, { actorId: actor.id });
+      data.flags = mergeFlags(data.flags, spec.flags, String(spec.tag || tag).trim());
+      documents.push(data);
+    }
+    const created = await scene.createEmbeddedDocuments("Token", documents);
+    return { scene: compactScene(scene), deletedExisting, created: created.map(serializeSceneToken) };
+  }
+
+  if (args.action === "update") {
+    if (!Array.isArray(args.updates) || !args.updates.length) throw new Error("updates array is required");
+    const updates = args.updates.map((entry) => {
+      const token = findSceneToken(scene, entry.id || entry.uuid || entry.name || entry.tokenIdentifier);
+      const patch = tokenPatch(entry);
+      if (entry.flags !== undefined || entry.tag !== undefined) patch.flags = mergeFlags(token.flags, entry.flags, String(entry.tag || "").trim());
+      return { _id: token.id, ...patch };
+    });
+    const updated = await scene.updateEmbeddedDocuments("Token", updates);
+    return { scene: compactScene(scene), updated: updated.map(serializeSceneToken) };
+  }
+
+  if (args.action === "delete") {
+    const ids = new Set((args.ids || []).map((identifier) => findSceneToken(scene, identifier).id));
+    if (tag) for (const token of collectionEntries(scene.tokens)) if (scenePreparationTag(token) === tag) ids.add(token.id);
+    if (!ids.size) throw new Error("ids or tag is required");
+    await scene.deleteEmbeddedDocuments("Token", Array.from(ids));
+    return { scene: compactScene(scene), deletedIds: Array.from(ids) };
+  }
+
+  throw new Error(`Unsupported manage_scene_tokens action: ${args.action}`);
+}
+
+function findSceneRegion(scene, identifier) {
+  const text = String(identifier || "").trim();
+  if (!text) throw new Error("Region identifier is required.");
+  const byId = scene.regions?.get?.(text);
+  if (byId) return byId;
+  const lower = text.toLowerCase();
+  const exact = collectionEntries(scene.regions).find((region) => region.uuid === text || region.name?.toLowerCase() === lower);
+  if (exact) return exact;
+  throw new Error(`Region not found on ${scene.name}: ${identifier}`);
+}
+
+function regionPatch(source = {}) {
+  const patch = {};
+  for (const key of ["name", "color", "visibility", "elevation", "shapes", "behaviors", "flags"]) {
+    if (source[key] !== undefined) patch[key] = source[key];
+  }
+  return patch;
+}
+
+async function manageSceneRegions(args = {}) {
+  const scene = requireScene(args.sceneIdentifier);
+  const tag = String(args.tag || "").trim();
+  if (args.action === "list") return { scene: compactScene(scene), regions: collectionEntries(scene.regions).map(serializeSceneRegion) };
+
+  if (args.action === "create") {
+    if (!Array.isArray(args.regions) || !args.regions.length) throw new Error("regions array is required");
+    let deletedExisting = 0;
+    if (args.replaceExisting && tag) {
+      const existing = collectionEntries(scene.regions).filter((region) => scenePreparationTag(region) === tag);
+      if (existing.length) await scene.deleteEmbeddedDocuments("Region", existing.map((region) => region.id));
+      deletedExisting = existing.length;
+    }
+    const documents = args.regions.map((region) => {
+      const data = regionPatch(region);
+      data.flags = mergeFlags({}, region.flags, String(region.tag || tag).trim());
+      return data;
+    });
+    const created = await scene.createEmbeddedDocuments("Region", documents);
+    return { scene: compactScene(scene), deletedExisting, created: created.map(serializeSceneRegion) };
+  }
+
+  if (args.action === "update") {
+    if (!Array.isArray(args.updates) || !args.updates.length) throw new Error("updates array is required");
+    const updates = args.updates.map((entry) => {
+      const region = findSceneRegion(scene, entry.id || entry.uuid || entry.name || entry.regionIdentifier);
+      const patch = regionPatch(entry);
+      if (entry.flags !== undefined || entry.tag !== undefined) patch.flags = mergeFlags(region.flags, entry.flags, String(entry.tag || "").trim());
+      return { _id: region.id, ...patch };
+    });
+    const updated = await scene.updateEmbeddedDocuments("Region", updates);
+    return { scene: compactScene(scene), updated: updated.map(serializeSceneRegion) };
+  }
+
+  if (args.action === "delete") {
+    const ids = new Set((args.ids || []).map((identifier) => findSceneRegion(scene, identifier).id));
+    if (tag) for (const region of collectionEntries(scene.regions)) if (scenePreparationTag(region) === tag) ids.add(region.id);
+    if (!ids.size) throw new Error("ids or tag is required");
+    await scene.deleteEmbeddedDocuments("Region", Array.from(ids));
+    return { scene: compactScene(scene), deletedIds: Array.from(ids) };
+  }
+
+  throw new Error(`Unsupported manage_scene_regions action: ${args.action}`);
 }
 
 function listScenes(args = {}) {
