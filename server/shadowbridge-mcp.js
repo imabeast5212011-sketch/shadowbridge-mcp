@@ -83,6 +83,31 @@ const tools = [
     },
   },
   {
+    name: "manage_macros",
+    description: "List, create, update, or delete world Macros through the connected GM client.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        worldId: stringProp("Optional target Foundry world id."),
+        action: enumProp(["list", "create", "update", "delete"]),
+        query: stringProp("Case-insensitive macro name or command search."),
+        limit: numberProp("Maximum macros returned.", 100),
+        macros: {
+          type: "array",
+          description: "Macros to create. Supports name, type, command, img, ownership, and flags.",
+          items: { type: "object", additionalProperties: true },
+        },
+        updates: {
+          type: "array",
+          description: "Macro updates. Each needs id, name, or macroIdentifier.",
+          items: { type: "object", additionalProperties: true },
+        },
+        ids: { type: "array", items: { type: "string" } },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "manage_scenes",
     description: "List, create, update, or delete Foundry Scene documents.",
     inputSchema: {

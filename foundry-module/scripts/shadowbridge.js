@@ -17,6 +17,7 @@ Hooks.once("init", () => {
 });
 
 Hooks.once("ready", () => {
+  installCotsAutomationHooks();
   restart();
 });
 
@@ -56,6 +57,146 @@ function registerSettings() {
     type: Number,
     default: DEFAULT_POLL_MS,
   });
+}
+
+function installCotsAutomationHooks() {
+  if (globalThis.__cotsShadowbridgeAutomationInstalled) return;
+  globalThis.__cotsShadowbridgeAutomationInstalled = true;
+
+  Hooks.on("dnd5e.preUseActivity", async (activity, usageConfig = {}) => {
+    try {
+      const item = activity?.item;
+      const actor = item?.actor;
+      if (!actor || item?.type !== "spell" || usageConfig._cotsIgnitionCoilPrompted) return;
+
+      const coil = actor.items?.find((entry) =>
+        entry.getFlag?.("cotsAutomation", "ignitionCoilPrompt") === true
+        || entry.name === "Tonja's Solvek Ignition Coil");
+      if (!coil?.system?.identified || !coil.system.equipped || !coil.system.attuned) return;
+      if (!activityDealsDamageType(activity, item, "fire")) return;
+
+      const staleCalibrationIds = actor.effects
+        ?.filter((effect) => effect.getFlag?.("cotsAutomation", "temporaryIgnitionCalibration") === true)
+        .map((effect) => effect.id) || [];
+      if (staleCalibrationIds.length) await actor.deleteEmbeddedDocuments("ActiveEffect", staleCalibrationIds);
+
+      usageConfig._cotsIgnitionCoilPrompted = true;
+      const state = { actorId: actor.id, coilId: coil.id, overburn: false, calibrationItemId: "", calibrationEffectId: "" };
+      const coilUses = itemUsesRemaining(coil);
+      if (coilUses > 0) {
+        state.overburn = await confirmCotsAutomation(
+          "Tonja's Solvek Ignition Coil",
+          `<p><strong>${item.name}</strong> carries fire through the coil.</p><p>Use <strong>Stored Overburn</strong> to add <strong>1d6 fire damage</strong>? (${coilUses} use${coilUses === 1 ? "" : "s"} remaining)</p>`,
+          "Use Overburn",
+        );
+      }
+
+      const calibration = actor.items?.find((entry) => entry.name === "Tonja's Coil - Solvek Calibration");
+      const calibrationUses = itemUsesRemaining(calibration);
+      if (activityRequiresSave(activity) && calibrationUses > 0) {
+        const useCalibration = await confirmCotsAutomation(
+          "Solvek Calibration",
+          `<p>Increase <strong>${item.name}</strong>'s spell save DC by <strong>+1</strong> for this casting? (${calibrationUses} use remaining)</p>`,
+          "Calibrate Spell",
+        );
+        if (useCalibration) {
+          const [effect] = await actor.createEmbeddedDocuments("ActiveEffect", [{
+            name: "Tonja's Coil - Calibration (One Casting)",
+            img: coil.img,
+            type: "base",
+            disabled: false,
+            transfer: false,
+            changes: [{ key: "system.bonuses.spell.dc", mode: 2, value: "1", priority: 40 }],
+            flags: { cotsAutomation: { temporaryIgnitionCalibration: true } },
+          }]);
+          state.calibrationItemId = calibration.id;
+          state.calibrationEffectId = effect?.id || "";
+        }
+      }
+
+      usageConfig._cotsIgnitionCoil = state;
+    } catch (error) {
+      console.error(`[${MODULE_ID}] Ignition Coil pre-cast automation failed`, error);
+      ui.notifications?.warn(`Ignition Coil automation could not prepare this casting: ${error.message || error}`);
+    }
+  });
+
+  Hooks.on("dnd5e.postUseActivity", async (activity, usageConfig = {}) => {
+    const state = usageConfig?._cotsIgnitionCoil;
+    if (!state) return;
+    const actor = game.actors?.get(state.actorId);
+    try {
+      if (state.overburn && actor) {
+        const coil = actor.items?.get(state.coilId);
+        await spendItemUse(coil);
+        const DamageRoll = CONFIG.Dice?.DamageRoll || Roll;
+        const roll = await new DamageRoll("1d6[fire]", actor.getRollData?.() || {}).evaluate();
+        await roll.toMessage({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          flavor: `<strong>Stored Overburn</strong> — Tonja's Solvek Ignition Coil adds fire to ${activity?.item?.name || "the spell"}.`,
+        });
+      }
+      if (actor && state.calibrationItemId) await spendItemUse(actor.items?.get(state.calibrationItemId));
+    } catch (error) {
+      console.error(`[${MODULE_ID}] Ignition Coil overburn roll failed`, error);
+      ui.notifications?.warn(`Ignition Coil automation could not finish cleanly: ${error.message || error}`);
+    } finally {
+      if (actor && state.calibrationEffectId) {
+        await actor.deleteEmbeddedDocuments("ActiveEffect", [state.calibrationEffectId]).catch((error) => {
+          console.warn(`[${MODULE_ID}] Could not remove temporary Ignition Coil calibration`, error);
+        });
+      }
+    }
+  });
+}
+
+function activityDealsDamageType(activity, item, wantedType) {
+  const matches = (part) => {
+    const types = part?.types;
+    if (types instanceof Set) return types.has(wantedType);
+    if (Array.isArray(types)) return types.includes(wantedType);
+    return String(types || "").toLowerCase().split(/[,\s]+/).includes(wantedType);
+  };
+  const activityParts = Array.from(activity?.damage?.parts || []);
+  if (activityParts.some(matches)) return true;
+  const baseParts = [item?.system?.damage?.base, item?.system?.damage?.versatile].filter(Boolean);
+  if (baseParts.some(matches)) return true;
+  return false;
+}
+
+function activityRequiresSave(activity) {
+  return activity?.type === "save" || Boolean(activity?.save?.ability?.size || activity?.save?.ability?.length);
+}
+
+function itemUsesRemaining(item) {
+  if (!item) return 0;
+  const maxValue = item.system?.uses?.max;
+  const max = Number(item.getRollData?.().uses?.max ?? maxValue ?? 0);
+  const spent = Number(item.system?.uses?.spent || 0);
+  if (Number.isFinite(max) && max > 0) return Math.max(0, max - spent);
+  if (typeof maxValue === "string" && maxValue.includes("@prof")) {
+    return Math.max(0, Number(item.actor?.system?.attributes?.prof || 0) - spent);
+  }
+  return 0;
+}
+
+async function spendItemUse(item) {
+  if (!item || itemUsesRemaining(item) <= 0) throw new Error(`${item?.name || "Item"} has no uses remaining.`);
+  await item.update({ "system.uses.spent": Number(item.system?.uses?.spent || 0) + 1 });
+}
+
+async function confirmCotsAutomation(title, content, yesLabel) {
+  const DialogV2 = foundry.applications?.api?.DialogV2;
+  if (DialogV2?.confirm) {
+    return Boolean(await DialogV2.confirm({
+      window: { title },
+      content,
+      yes: { label: yesLabel, icon: "fa-solid fa-fire" },
+      no: { label: "Not this cast", icon: "fa-solid fa-xmark" },
+      rejectClose: false,
+    }));
+  }
+  return Boolean(await Dialog.confirm({ title, content, yes: () => true, no: () => false, defaultYes: false }));
 }
 
 class ShadowbridgeRuntime {
@@ -232,6 +373,8 @@ async function dispatchCommand(method, args) {
       return manageActors(args);
     case "manage_journals":
       return manageJournals(args);
+    case "manage_macros":
+      return manageMacros(args);
     case "manage_scenes":
       return manageScenes(args);
     case "inspect_scene":
@@ -584,6 +727,73 @@ async function manageJournals(args = {}) {
     default:
       throw new Error(`Unsupported manage_journals action: ${args.action}`);
   }
+}
+
+async function manageMacros(args = {}) {
+  const serialize = (macro) => ({
+    id: macro.id,
+    uuid: macro.uuid,
+    name: macro.name,
+    type: macro.type,
+    img: macro.img,
+    command: macro.command,
+    ownership: macro.ownership,
+    flags: macro.flags,
+  });
+  const find = (identifier) => {
+    const text = String(identifier || "").trim();
+    const exact = game.macros?.get?.(text)
+      || game.macros?.find((macro) => macro.uuid === text || macro.name?.toLowerCase() === text.toLowerCase());
+    if (!exact) throw new Error(`Macro not found: ${identifier}`);
+    return exact;
+  };
+
+  if (args.action === "list") {
+    const query = String(args.query || "").toLowerCase();
+    const limit = Number.isFinite(args.limit) ? Number(args.limit) : 100;
+    const macros = (game.macros || [])
+      .filter((macro) => !query || `${macro.name}\n${macro.command}`.toLowerCase().includes(query))
+      .slice(0, limit)
+      .map(serialize);
+    return { macros, totalMatches: macros.length };
+  }
+
+  if (args.action === "create") {
+    if (!Array.isArray(args.macros) || !args.macros.length) throw new Error("macros array is required");
+    const created = await Macro.createDocuments(args.macros.map((macro) => ({
+      name: requireString(macro.name, "macro.name"),
+      type: macro.type || "script",
+      command: String(macro.command || ""),
+      ...(macro.img ? { img: macro.img } : {}),
+      ...(macro.ownership ? { ownership: macro.ownership } : {}),
+      ...(macro.flags ? { flags: macro.flags } : {}),
+    })));
+    return { created: created.map(serialize) };
+  }
+
+  if (args.action === "update") {
+    if (!Array.isArray(args.updates) || !args.updates.length) throw new Error("updates array is required");
+    const updated = [];
+    for (const entry of args.updates) {
+      const macro = find(entry.id || entry.name || entry.macroIdentifier);
+      const patch = {};
+      for (const key of ["name", "type", "command", "img", "ownership", "flags"]) {
+        if (entry[key] !== undefined) patch[key] = entry[key];
+      }
+      await macro.update(patch);
+      updated.push(serialize(macro));
+    }
+    return { updated };
+  }
+
+  if (args.action === "delete") {
+    const macros = (args.ids || []).map(find);
+    if (!macros.length) throw new Error("ids array is required");
+    await Macro.deleteDocuments(macros.map((macro) => macro.id));
+    return { deleted: macros.map(serialize) };
+  }
+
+  throw new Error(`Unsupported manage_macros action: ${args.action}`);
 }
 
 function listJournals(args = {}) {
