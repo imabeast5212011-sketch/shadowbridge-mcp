@@ -967,6 +967,20 @@ function serializeSceneLight(light) {
   };
 }
 
+function serializeSceneLevel(level) {
+  const data = level.toObject ? level.toObject() : {};
+  return {
+    id: level.id,
+    uuid: level.uuid,
+    name: level.name,
+    sort: level.sort ?? data.sort,
+    elevation: data.elevation ?? level.elevation,
+    background: data.background ?? level.background,
+    textures: data.textures ?? level.textures,
+    flags: level.flags,
+  };
+}
+
 function inspectScene(args = {}) {
   const scene = requireScene(args.sceneIdentifier);
   return {
@@ -974,6 +988,7 @@ function inspectScene(args = {}) {
     tokens: args.includeTokens === false ? undefined : collectionEntries(scene.tokens).map(serializeSceneToken),
     lights: args.includeLights === false ? undefined : collectionEntries(scene.lights).map(serializeSceneLight),
     regions: args.includeRegions === false ? undefined : collectionEntries(scene.regions).map(serializeSceneRegion),
+    levels: args.includeLevels === false ? undefined : getSceneLevels(scene).map(serializeSceneLevel),
   };
 }
 

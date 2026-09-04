@@ -11,7 +11,7 @@ const TOKEN_FILE = path.join(ROOT_DIR, "shadowbridge-token.txt");
 const HOST = process.env.SHADOWBRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SHADOWBRIDGE_PORT || 31777);
 const TOKEN = loadToken();
-const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.17" };
+const SERVER_INFO = { name: "shadowbridge-mcp", version: "0.1.18" };
 const REQUEST_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_REQUEST_TIMEOUT_MS || 60000);
 const POLL_TIMEOUT_MS = Number(process.env.SHADOWBRIDGE_POLL_TIMEOUT_MS || 25000);
 const CLIENT_TTL_MS = Number(process.env.SHADOWBRIDGE_CLIENT_TTL_MS || 60000);
@@ -144,6 +144,7 @@ const tools = [
         includeTokens: boolProp("Include embedded Tokens.", true),
         includeLights: boolProp("Include embedded AmbientLights.", true),
         includeRegions: boolProp("Include embedded Regions.", true),
+        includeLevels: boolProp("Include Exalted Scenes Level documents and background data.", true),
       },
       required: ["sceneIdentifier"],
     },
